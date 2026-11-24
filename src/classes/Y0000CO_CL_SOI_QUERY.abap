@@ -68,6 +68,15 @@ class y0000co_cl_soi_query definition
         versn  type versn,
       end of ty_filter.
 
+*---------------------------------------------------------------------*
+* Result table type
+*---------------------------------------------------------------------*
+* A named table type is needed: generic table types cannot be used in
+* RETURNING parameters.
+*---------------------------------------------------------------------*
+    types:
+      tt_result type standard table of y0000co_c_soiline with empty key.
+
     constants:
       gc_fallback_langu type sy-langu value 'E'.
 
@@ -78,7 +87,7 @@ class y0000co_cl_soi_query definition
         raising   cx_rap_query_filter_no_range,
       read_lines
         importing is_filter        type ty_filter
-        returning value(rt_result) type standard table of y0000co_c_soiline with empty key.
+        returning value(rt_result) type tt_result.
 
 endclass.
 
