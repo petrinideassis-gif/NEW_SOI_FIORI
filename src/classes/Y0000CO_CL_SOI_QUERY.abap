@@ -102,13 +102,10 @@ class y0000co_cl_soi_query implementation.
 *---------------------------------------------------------------------*
   method if_rap_query_provider~select.
 
-    try.
-        data(ls_filter) = read_filter( io_request ).
-      catch cx_rap_query_filter_no_range into data(lx_filter).
-        raise exception type cx_rap_query_provider
-          exporting
-            previous = lx_filter.
-    endtry.
+*   CX_RAP_QUERY_FILTER_NO_RANGE is not caught: it passes through to the
+*   framework, which reports it. CX_RAP_QUERY_PROVIDER itself is
+*   abstract and cannot be raised.
+    data(ls_filter) = read_filter( io_request ).
 
     data(lt_result) = read_lines( ls_filter ).
 
