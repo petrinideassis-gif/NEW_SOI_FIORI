@@ -1,5 +1,8 @@
 @Metadata.layer: #CUSTOMER
-@UI.headerInfo: { typeName: 'SOI Line', typeNamePlural: 'Statement of Income' }
+@UI.headerInfo: { typeName:       'SOI Line',
+                  typeNamePlural: 'Statement of Income',
+                  title:          { type: #STANDARD, value: 'SoiLine' },
+                  description:    { type: #STANDARD, value: 'SoiLineText' } }
 annotate entity Y0000CO_C_SOILINE with
 {
   @UI.selectionField: [{ position: 10 }]
@@ -18,12 +21,10 @@ annotate entity Y0000CO_C_SOILINE with
   Version;
 
   @UI.lineItem: [{ position: 10 }]
+  @UI.textArrangement: #TEXT_FIRST
   SoiLine;
 
   @UI.lineItem: [{ position: 20 }]
-  SoiLineText;
-
-  @UI.lineItem: [{ position: 30 }]
   TotalAmount;
 
   @UI.hidden: true

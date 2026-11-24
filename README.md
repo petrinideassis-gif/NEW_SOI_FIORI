@@ -19,14 +19,14 @@ Stage 1 returns the real SOI lines and texts of the selected version with amount
 
 ## Restore order in ADT (one object at a time, activate before the next)
 
-1. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, paste the source (replace the generated definition and implementation), save, activate
-2. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, use the empty template), paste, save, activate
-3. Metadata extension `Y0000CO_C_SOILINE` (same name), paste, activate
+1. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, any template), Ctrl+A, paste, save, activate. A warning that the class does not exist yet is expected
+2. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
+3. Metadata extension `Y0000CO_C_SOILINE` (same name; right-click the entity → New Metadata Extension), paste, activate
 4. Service definition `Y0000CO_UI_SOI`, paste, activate
 5. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
 6. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
 
-Use package `$TMP` while testing; move to the real package with a transport once it works.
+All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
 ## Stage 1 checks in the preview
 
@@ -35,6 +35,16 @@ Use package `$TMP` while testing; move to the real package with a transport once
 3. Go with year and company code: the SOI lines of version `STD` appear in outline order with their texts
 4. Compare the lines and texts with the classic report `Y0000CO_SOI_NEW` for the same version
 5. Amount column is zero in stage 1
+
+## Troubleshooting (met so far)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Generic types ... cannot be specified in RETURNING parameters" | RETURNING typed as `standard table of ...` | Named table type `tt_result` |
+| "Type Y0000CO_C_SOILINE is unknown" in the class | Entity not active yet | Activate the entity, then the class |
+| "Instances of the abstract class CX_RAP_QUERY_PROVIDER cannot be generated" | The class is abstract | Let `CX_RAP_QUERY_FILTER_NO_RANGE` pass through |
+| "You wrote a comment outside a method implementation" | Comment between two methods in the implementation part | Comments only inside `method ... endmethod` |
+| "Unexpected character" in the data definition | Text after the closing `}` or an ABAP-style comment (`*`, `"`) | CDS comments are `//` or `/* */`; nothing after `}` |
 
 ## Next stages
 
