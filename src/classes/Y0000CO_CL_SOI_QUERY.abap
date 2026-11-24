@@ -94,13 +94,14 @@ endclass.
 
 class y0000co_cl_soi_query implementation.
 
+  method if_rap_query_provider~select.
 *---------------------------------------------------------------------*
 * Select: entry point called by the RAP framework
 *---------------------------------------------------------------------*
 * The framework calls this for the data request and, separately, for
 * a count-only request. Both are answered from the same result table.
 *---------------------------------------------------------------------*
-  method if_rap_query_provider~select.
+
 
 *   CX_RAP_QUERY_FILTER_NO_RANGE is not caught: it passes through to the
 *   framework, which reports it. CX_RAP_QUERY_PROVIDER itself is
@@ -134,6 +135,7 @@ class y0000co_cl_soi_query implementation.
   endmethod.
 
 
+  method read_filter.
 *---------------------------------------------------------------------*
 * Read the filter values of the request
 *---------------------------------------------------------------------*
@@ -141,7 +143,7 @@ class y0000co_cl_soi_query implementation.
 * (SOIVAR STD, value type 04, version 000), so a request without them
 * still behaves like the report with its defaults.
 *---------------------------------------------------------------------*
-  method read_filter.
+
 
     data(lt_ranges) = io_request->get_filter( )->get_as_ranges( ).
 
@@ -172,6 +174,7 @@ class y0000co_cl_soi_query implementation.
   endmethod.
 
 
+  method read_lines.
 *---------------------------------------------------------------------*
 * Read the SOI lines and texts of one version
 *---------------------------------------------------------------------*
@@ -180,7 +183,7 @@ class y0000co_cl_soi_query implementation.
 * INTO TABLE @DATA(...) is used for the texts because the SELECT maps
 * by position, not by name (see the note in Y0000CO_SOI_NEW).
 *---------------------------------------------------------------------*
-  method read_lines.
+
 
     select soiline, outline
       from y0000co_nsoi01
