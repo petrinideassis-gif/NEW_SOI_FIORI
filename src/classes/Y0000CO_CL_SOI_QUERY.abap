@@ -1,5 +1,5 @@
 *----------------------------------------------------------------------*
-* Description : Query provider for the SOI Fiori preview (stage 1 stub)
+* Description : Query provider for the SOI Fiori preview
 *----------------------------------------------------------------------*
 * ABAP Name     : Y0000CO_CL_SOI_QUERY
 * Author        : <SAP user ID>
@@ -16,11 +16,9 @@
 *  Fills the custom entity Y0000CO_C_SOILINE for the Fiori preview of
 *  the Statement of Income (SOI).
 *
-*  Stage 1 (this version) is a stub: it returns the real SOI lines and
-*  texts of the selected version from the SOI customizing, with a zero
-*  amount. It checks the plumbing (filter bar, mandatory fields,
-*  defaults, columns, sorting, paging) before the SOI engine is
-*  connected.
+*  Stage 2 (this version): the totals come from the SOI engine
+*  Y0000CO_CL_SOI_ENGINE in total mode (periods 1-16), a copy of the
+*  engine of report Y0000CO_SOI_NEW.
 *
 *  Typical business use:
 *  Controllers open the SOI preview, select version, year and company
@@ -28,16 +26,15 @@
 *
 *  Main Steps
 *  1. Read the filter values of the request
-*  2. Read the SOI lines and texts of the selected version
-*  3. Build the result rows (amount zero in stage 1)
+*  2. Run the SOI engine for the selection
+*  3. Map the engine lines to the entity rows
 *  4. Apply sorting and paging, return the rows and the total count
 *
 *  Important technical notes from development:
-*  - Controlling area (KOKRS) is fixed to '2000' (not needed in stage 1)
-*  - Text lookup prefers the logon language and falls back to 'E', as
-*    in Y0000CO_SOI_NEW, so a missing translation never drops a line
-*  - No authorization check in stage 1; stage 2 adds it as the first
-*    statement of SELECT, together with the engine call
+*  - Controlling area (KOKRS) is fixed to '2000' (in the engine)
+*  - Authorization is checked first in the engine's RUN, with the
+*    centralised Y0000CO_FI_AUTHORITY_CHECKS, as in the report
+*  - Texts (logon language, fallback 'E') come from the engine
 *  - Comments must stay inside METHOD ... ENDMETHOD: the class editor
 *    rejects comments between method implementations
 *  - The framework expects sorting and paging to be read by the query
@@ -58,7 +55,7 @@ class y0000co_cl_soi_query definition
 *---------------------------------------------------------------------*
 * Filter values of one request
 *---------------------------------------------------------------------*
-* Only the first single value of each filter is used in stage 1; the
+* Only the first single value of each filter is used; the
 * entity has no ranges or multi-value filters yet.
 *---------------------------------------------------------------------*
     types:
@@ -78,9 +75,6 @@ class y0000co_cl_soi_query definition
 *---------------------------------------------------------------------*
     types:
       tt_result type standard table of y0000co_c_soiline with empty key.
-
-    constants:
-      gc_fallback_langu type sy-langu value 'E'.
 
     methods:
       read_filter
@@ -175,60 +169,28 @@ class y0000co_cl_soi_query implementation.
 
   method read_lines.
 *---------------------------------------------------------------------*
-* Read the SOI lines and texts of one version
+* Run the SOI engine and map its lines to the entity rows
 *---------------------------------------------------------------------*
-* Every SELECT is restricted to the selected version: reading the
-* customizing without SOIVAR would mix the rows of all versions.
-* The texts are read INTO TABLE @DATA(...) because a SELECT into a
-* pre-typed table maps by position, not by name (see the note in
-* Y0000CO_SOI_NEW, where this caused blank texts).
+* The engine is created per request: its caches live for one run only.
+* Without company code or fiscal year there is nothing to compute (both
+* are mandatory in the filter bar, so this is only a safeguard).
+* Engine messages (e.g. a SET that could not be expanded) are not shown
+* in stage 2; an engine error returns no lines.
 *---------------------------------------------------------------------*
 
-    select soiline, outline
-      from y0000co_nsoi01
-      where soivar = @is_filter-soivar
-      order by outline
-      into table @data(lt_lines).
-
-    if lt_lines is initial.
+    if is_filter-bukrs is initial or is_filter-gjahr is initial.
       return.
     endif.
 
-    select soiline, spras, text
-      from y0000co_nsoi01t
-      for all entries in @lt_lines
-      where soivar  = @is_filter-soivar
-        and soiline = @lt_lines-soiline
-        and spras in ( @sy-langu, @gc_fallback_langu )
-      into table @data(lt_texts).
+    data(lo_engine) = new y0000co_cl_soi_engine( ).
 
-*---------------------------------------------------------------------*
-* Company code currency
-*---------------------------------------------------------------------*
-* Amounts are zero in stage 1, but the amount column still needs its
-* currency for the Fiori table to render it.
-*---------------------------------------------------------------------*
-    select single waers
-      from t001
-      where bukrs = @is_filter-bukrs
-      into @data(lv_waers).
+    data(lt_lines) = lo_engine->run( value #( soivar = is_filter-soivar
+                                              bukrs  = is_filter-bukrs
+                                              gjahr  = is_filter-gjahr
+                                              versn  = is_filter-versn
+                                              wrttp  = is_filter-wrttp ) ).
 
     loop at lt_lines assigning field-symbol(<ls_line>).
-      data(lv_text) = value y0000co_nsoi01t-text( ).
-
-      read table lt_texts into data(ls_text)
-        with key soiline = <ls_line>-soiline
-                 spras   = sy-langu.
-      if sy-subrc <> 0.
-        read table lt_texts into ls_text
-          with key soiline = <ls_line>-soiline
-                   spras   = gc_fallback_langu.
-      endif.
-
-      if sy-subrc = 0.
-        lv_text = ls_text-text.
-      endif.
-
       append value #(
         soiversion  = is_filter-soivar
         fiscalyear  = is_filter-gjahr
@@ -236,10 +198,10 @@ class y0000co_cl_soi_query implementation.
         valuetype   = is_filter-wrttp
         version     = is_filter-versn
         soiline     = <ls_line>-soiline
-        soilinetext = lv_text
+        soilinetext = <ls_line>-text
         outline     = <ls_line>-outline
-        totalamount = 0
-        currency    = lv_waers ) to rt_result.
+        totalamount = <ls_line>-total
+        currency    = <ls_line>-waers ) to rt_result.
     endloop.
 
   endmethod.

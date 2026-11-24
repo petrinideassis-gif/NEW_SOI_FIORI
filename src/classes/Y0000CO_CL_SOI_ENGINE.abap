@@ -1,0 +1,1600 @@
+*----------------------------------------------------------------------*
+* Description : SOI engine for the Fiori preview (total mode)
+*----------------------------------------------------------------------*
+* ABAP Name     : Y0000CO_CL_SOI_ENGINE
+* Author        : <SAP user ID>
+* Date          : 24.11.2026
+* Reference No. : <CHG0000000 / CTASK0000000>
+*----------------------------------------------------------------------*
+*  Changes     (internal Version: Documentation/Info on line level)    *
+*----------------------------------------------------------------------*
+*  Date       Name    internal    Transp.No. Description               *
+*                    -Version-    Refer. No.                           *
+*                                                                      *
+*----------------------------------------------------------------------*
+*  Purpose
+*  Computes the Statement of Income (SOI) lines for one company code,
+*  fiscal year, version and value type, in total mode (periods 1-16).
+*  Used by the query provider Y0000CO_CL_SOI_QUERY of the SOI Fiori
+*  preview.
+*
+*  The engine is a copy of the engine part of report Y0000CO_SOI_NEW
+*  (READ_CUSTOMIZING, PREPARE_RULE_SCOPES, PREPARE_ORDER_SCOPE,
+*  READ_ORDER_TOTALS, SELECT_TOTALS_FOR_RULE, BUILD_SUMMARY_DATA,
+*  APPLY_FORMULA_LINES and their helpers). The report is NOT changed;
+*  both must give the same totals for the same selection.
+*
+*  Typical business use:
+*  Controllers open the SOI preview in Fiori instead of running the
+*  classic report in SAP GUI.
+*
+*  Main Steps
+*  1. Check authorization for the company code
+*  2. Validate company code, read currency and SOI customizing
+*  3. Expand Cost Center / Cost Element groups (once per run)
+*  4. Expand the Process Order SET and read the order totals
+*  5. Accumulate COSP/COSS totals per extraction rule
+*  6. Resolve METHOD R formula lines in dependency order
+*  7. Return one line per SOI line with its total
+*
+*  Important technical notes from development:
+*  - Controlling area (KOKRS) is fixed to '2000'; ledger LEDNR '00'
+*  - Total mode only: periods 1-16, including the special periods
+*  - Differences to Y0000CO_SOI_NEW: selection parameters P_BUKRS /
+*    P_SOIVAR / P_GJAHR / P_VERSN / P_WRTTP come from the run context
+*    (GV_BUKRS / GV_SOIVAR / GV_GJAHR / GV_VERSN / GV_WRTTP); dialog
+*    messages are collected in GT_MESSAGES (GET_MESSAGES) instead of
+*    being sent; no comparison, no detail mode, no drill-down, no ALV
+*  - Error that stops the run (unknown company code, company code not
+*    in KOKRS 2000, no customizing, inconsistent customizing): RUN
+*    returns no lines and GET_MESSAGES says why
+*  - Caches live for one RUN only: the engine is created per request
+*  - Comments must stay inside METHOD ... ENDMETHOD: the class editor
+*    rejects comments between method implementations
+*----------------------------------------------------------------------*
+class y0000co_cl_soi_engine definition
+  public
+  final
+  create public.
+
+  public section.
+
+*---------------------------------------------------------------------*
+* Run context and result
+*---------------------------------------------------------------------*
+* TY_CONTEXT replaces the selection screen of Y0000CO_SOI_NEW.
+* TY_LINE is one SOI line with its total over periods 1-16.
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_context,
+        soivar type y0000co_nsoi00-soivar,
+        bukrs  type bukrs,
+        gjahr  type gjahr,
+        versn  type versn,
+        wrttp  type wrttp,
+      end of ty_context,
+
+      begin of ty_line,
+        soiline    type y0000co_nsoi01-soiline,
+        outline    type y0000co_nsoi01-outline,
+        text       type y0000co_nsoi01t-text,
+        total      type v_coss_view-wog001,
+        waers      type waers,
+        is_formula type abap_bool,
+      end of ty_line,
+
+      tt_line type standard table of ty_line with empty key.
+
+    methods:
+      run
+        importing is_context    type ty_context
+        returning value(rt_line) type tt_line,
+
+      get_messages
+        returning value(rt_messages) type string_table.
+
+  private section.
+
+*---------------------------------------------------------------------*
+* Fixed business constants (as in Y0000CO_SOI_NEW)
+*---------------------------------------------------------------------*
+* Controlling area is always 2000. LEDNR '00' is the standard CO
+* ledger. GC_FALLBACK_LANGU is used when a SOI line has no text in the
+* logon language. GC_PERIOD_MAX is the last period COSP/COSS carries
+* (12 posting periods plus 4 special periods).
+*---------------------------------------------------------------------*
+    constants:
+      gc_kokrs          type kokrs             value '2000',
+      gc_lednr          type v_coss_view-lednr value '00',
+      gc_fallback_langu type sy-langu          value 'E',
+      gc_period_max     type i                 value 16.
+
+*---------------------------------------------------------------------*
+* Period / SOI summary structures
+*---------------------------------------------------------------------*
+* TY_PERIOD_SUM holds one set of period 001-016 values (raw COSP/COSS
+* WOGnnn columns renamed to VALnnn); TY_SUMMARY is one SOI line,
+* extraction or formula. Comparison and colour fields of the report
+* are left out.
+*---------------------------------------------------------------------*
+    types: ty_period type n length 3.
+
+    types:
+      begin of ty_period_sum,
+        val001 type v_coss_view-wog001,
+        val002 type v_coss_view-wog002,
+        val003 type v_coss_view-wog003,
+        val004 type v_coss_view-wog004,
+        val005 type v_coss_view-wog005,
+        val006 type v_coss_view-wog006,
+        val007 type v_coss_view-wog007,
+        val008 type v_coss_view-wog008,
+        val009 type v_coss_view-wog009,
+        val010 type v_coss_view-wog010,
+        val011 type v_coss_view-wog011,
+        val012 type v_coss_view-wog012,
+        val013 type v_coss_view-wog013,
+        val014 type v_coss_view-wog014,
+        val015 type v_coss_view-wog015,
+        val016 type v_coss_view-wog016,
+      end of ty_period_sum,
+
+      begin of ty_summary,
+        soiline    type y0000co_nsoi01-soiline,
+        outline    type y0000co_nsoi01-outline,
+        text       type y0000co_nsoi01t-text,
+        val001     type v_coss_view-wog001,
+        val002     type v_coss_view-wog002,
+        val003     type v_coss_view-wog003,
+        val004     type v_coss_view-wog004,
+        val005     type v_coss_view-wog005,
+        val006     type v_coss_view-wog006,
+        val007     type v_coss_view-wog007,
+        val008     type v_coss_view-wog008,
+        val009     type v_coss_view-wog009,
+        val010     type v_coss_view-wog010,
+        val011     type v_coss_view-wog011,
+        val012     type v_coss_view-wog012,
+        val013     type v_coss_view-wog013,
+        val014     type v_coss_view-wog014,
+        val015     type v_coss_view-wog015,
+        val016     type v_coss_view-wog016,
+        line_sum   type v_coss_view-wog001,
+        waers      type waers,
+        is_formula type abap_bool,
+      end of ty_summary.
+
+*---------------------------------------------------------------------*
+* Customizing row structures (Y0000CO_NSOI01/01T/02/03)
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_soi01,
+        soiline type y0000co_nsoi01-soiline,
+        outline type y0000co_nsoi01-outline,
+        text    type y0000co_nsoi01t-text,
+      end of ty_soi01,
+
+      begin of ty_rule,
+        soiline type y0000co_nsoi02-soiline,
+        method  type y0000co_nsoi02-method,
+        kokrs   type y0000co_nsoi02-kokrs,
+        ksgru   type y0000co_nsoi02-ksgru,
+        kagru   type y0000co_nsoi02-kagru,
+      end of ty_rule,
+
+      begin of ty_formula,
+        soiline      type y0000co_nsoi03-soiline,
+        comp_soiline type y0000co_nsoi03-comp_soiline,
+        oper_type    type y0000co_nsoi03-oper_type,
+      end of ty_formula.
+
+*---------------------------------------------------------------------*
+* SET expansion / object scope helper structures
+*---------------------------------------------------------------------*
+* TY_SET_VALUE is one raw G_SET_TREE_IMPORT result line; TY_KOSTL_SCOPE
+* and TY_OBJ_SCOPE hold expanded cost centers / CO object numbers.
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_set_value,
+        from type setvalues-from,
+        to   type setvalues-to,
+      end of ty_set_value,
+
+      begin of ty_kostl_scope,
+        kostl type csks-kostl,
+      end of ty_kostl_scope,
+
+      begin of ty_obj_scope,
+        objnr type j_objnr,
+      end of ty_obj_scope.
+
+    types:
+      tt_summary     type standard table of ty_summary     with empty key,
+      tt_soi01       type standard table of ty_soi01       with empty key,
+      tt_rule        type standard table of ty_rule        with empty key,
+      tt_formula     type standard table of ty_formula     with empty key,
+      tt_set_value   type standard table of ty_set_value   with empty key,
+      tt_kostl_scope type sorted table   of ty_kostl_scope with unique key kostl,
+      tt_obj_scope   type sorted table   of ty_obj_scope   with unique key objnr,
+      tt_r_objnr     type range of j_objnr,
+      tt_r_kstar     type range of kstar.
+
+*---------------------------------------------------------------------*
+* Cost center object number cache (METHOD C)
+*---------------------------------------------------------------------*
+    types: begin of ty_cc_cache,
+             kokrs type kokrs,
+             bukrs type bukrs,
+             ksgru type y0000co_nsoi02-ksgru,
+             objnr type j_objnr,
+           end of ty_cc_cache.
+
+    types tt_cc_cache type sorted table of ty_cc_cache
+      with unique key kokrs bukrs ksgru objnr.
+
+*---------------------------------------------------------------------*
+* Cost element (KSTAR) range cache
+*---------------------------------------------------------------------*
+    types: begin of ty_kstar_cache,
+             kokrs  type kokrs,
+             kagru  type y0000co_nsoi02-kagru,
+             sign   type c length 1,
+             option type c length 2,
+             low    type kstar,
+             high   type kstar,
+           end of ty_kstar_cache.
+
+    types tt_kstar_cache type sorted table of ty_kstar_cache
+      with non-unique key kokrs kagru.
+
+*---------------------------------------------------------------------*
+* Process order object number cache (METHOD A)
+*---------------------------------------------------------------------*
+    types: begin of ty_order_cache,
+             bukrs type bukrs,
+             gjahr type gjahr,
+             objnr type j_objnr,
+           end of ty_order_cache.
+
+    types tt_order_cache type sorted table of ty_order_cache
+      with unique key bukrs gjahr objnr.
+
+*---------------------------------------------------------------------*
+* Process order period totals (METHOD A)
+*---------------------------------------------------------------------*
+* Order numbers don't encode KOKRS/BUKRS, so they are matched via one
+* EQ per order in the OBJNR range, read once per run regardless of how
+* many KAGRU groups use METHOD A (see READ_ORDER_TOTALS).
+*---------------------------------------------------------------------*
+    types: begin of ty_order_total_row,
+             objnr  type j_objnr,
+             kstar  type kstar,
+             wog001 type v_coss_view-wog001,
+             wog002 type v_coss_view-wog002,
+             wog003 type v_coss_view-wog003,
+             wog004 type v_coss_view-wog004,
+             wog005 type v_coss_view-wog005,
+             wog006 type v_coss_view-wog006,
+             wog007 type v_coss_view-wog007,
+             wog008 type v_coss_view-wog008,
+             wog009 type v_coss_view-wog009,
+             wog010 type v_coss_view-wog010,
+             wog011 type v_coss_view-wog011,
+             wog012 type v_coss_view-wog012,
+             wog013 type v_coss_view-wog013,
+             wog014 type v_coss_view-wog014,
+             wog015 type v_coss_view-wog015,
+             wog016 type v_coss_view-wog016,
+           end of ty_order_total_row.
+
+    types tt_order_total_row type standard table of ty_order_total_row with empty key.
+
+*---------------------------------------------------------------------*
+* Per-rule result cache
+*---------------------------------------------------------------------*
+* Identical rules reused by several SOI lines hit the database once.
+*---------------------------------------------------------------------*
+    types: begin of ty_totals_cache,
+             method  type y0000co_nsoi02-method,
+             kokrs   type kokrs,
+             bukrs   type bukrs,
+             ksgru   type y0000co_nsoi02-ksgru,
+             kagru   type y0000co_nsoi02-kagru,
+             periods type ty_period_sum,
+           end of ty_totals_cache.
+
+    types tt_totals_cache type sorted table of ty_totals_cache
+      with unique key method kokrs bukrs ksgru kagru.
+
+*---------------------------------------------------------------------*
+* Instance state (one run)
+*---------------------------------------------------------------------*
+* GV_BUKRS / GV_SOIVAR replace P_BUKRS / P_SOIVAR of the report.
+* GV_PERV / GV_PERB are fixed to 1 / 16 (total mode). GV_ERROR stops
+* the run after a blocking customizing or master data error.
+*---------------------------------------------------------------------*
+    data:
+      gv_bukrs        type bukrs,
+      gv_soivar       type y0000co_nsoi00-soivar,
+      gv_waers        type waers,
+      gv_gjahr        type v_coss_view-gjahr,
+      gv_versn        type v_coss_view-versn,
+      gv_wrttp        type v_coss_view-wrttp,
+      gv_perv         type i,
+      gv_perb         type i,
+      gv_error        type abap_bool,
+      gt_messages     type string_table,
+      gt_soi01        type tt_soi01,
+      gt_rule         type tt_rule,
+      gt_formula      type tt_formula,
+      gt_summary      type tt_summary,
+      gt_cc_cache     type tt_cc_cache,
+      gt_kstar_cache  type tt_kstar_cache,
+      gt_order_cache  type tt_order_cache,
+      gt_order_totals type tt_order_total_row,
+      gt_totals_cache type tt_totals_cache.
+
+*---------------------------------------------------------------------*
+* Methods (names as in Y0000CO_SOI_NEW)
+*---------------------------------------------------------------------*
+    methods:
+      check_authority,
+
+      add_message
+        importing iv_text  type string
+                  iv_error type abap_bool default abap_false,
+
+      validate_company_code,
+
+      read_currency,
+
+      read_customizing,
+
+      validate_customizing,
+
+      get_set_values
+        importing iv_setid  type sethier-setid
+        changing  ct_values type tt_set_value
+                  cv_found  type abap_bool,
+
+      resolve_cc_by_group_bukrs
+        importing iv_kokrs      type kokrs
+                  iv_ksgru      type y0000co_nsoi02-ksgru
+        changing  ct_costcenter type tt_kostl_scope
+                  cv_found      type abap_bool,
+
+      build_objnr_from_costcenters
+        importing it_costcenter type tt_kostl_scope
+        changing  ct_objnr      type tt_obj_scope,
+
+      resolve_kstar_group
+        importing iv_kokrs type kokrs
+                  iv_kagru type y0000co_nsoi02-kagru
+        changing  ct_kstar type tt_r_kstar
+                  cv_found type abap_bool,
+
+      prepare_order_scope,
+
+      read_order_totals,
+
+      read_order_totals_batch
+        importing it_r_objnr type tt_r_objnr
+                  it_r_kstar type tt_r_kstar,
+
+      periods_from_wog
+        importing iv_source  type any
+        changing  cs_periods type ty_period_sum,
+
+      accumulate_periods
+        importing is_add   type ty_period_sum
+        changing  cs_total type ty_period_sum,
+
+      add_periods_to_summary
+        importing is_periods type ty_period_sum
+        changing  cs_summary type ty_summary,
+
+      select_totals_for_rule
+        importing is_rule    type ty_rule
+                  iv_bukrs   type bukrs
+                  it_objnr   type tt_obj_scope
+                  it_kstar   type tt_r_kstar
+        changing  cs_summary type ty_summary,
+
+      prepare_rule_scopes,
+
+      get_cached_objnr
+        importing iv_kokrs type kokrs
+                  iv_bukrs type bukrs
+                  iv_ksgru type y0000co_nsoi02-ksgru
+        changing  ct_objnr type tt_obj_scope,
+
+      get_cached_order_objnr
+        changing ct_objnr type tt_obj_scope,
+
+      get_cached_kstar
+        importing iv_kokrs type kokrs
+                  iv_kagru type y0000co_nsoi02-kagru
+        changing  ct_kstar type tt_r_kstar,
+
+      build_summary_data,
+
+      apply_formula_lines.
+
+endclass.
+
+
+class y0000co_cl_soi_engine implementation.
+
+  method run.
+*---------------------------------------------------------------------*
+* Run the SOI engine for one context (total mode)
+*---------------------------------------------------------------------*
+* Same sequence as RUN / RUN_PASS of Y0000CO_SOI_NEW for pass A in
+* total mode. Authorization is checked first, per convention. Any
+* blocking error stops the run with no lines; GET_MESSAGES says why.
+*---------------------------------------------------------------------*
+
+    gv_bukrs  = is_context-bukrs.
+    gv_soivar = is_context-soivar.
+    gv_gjahr  = is_context-gjahr.
+    gv_versn  = is_context-versn.
+    gv_wrttp  = is_context-wrttp.
+
+    check_authority( ).
+
+    clear: gv_error, gt_messages, gt_soi01, gt_rule, gt_formula,
+           gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
+           gt_order_totals, gt_totals_cache.
+
+*   Total mode: the full fiscal year including special periods 13-16,
+*   exactly as DETERMINE_PERIOD_BOUNDS does in the report.
+    gv_perv = 1.
+    gv_perb = gc_period_max.
+
+    validate_company_code( ).
+    if gv_error = abap_true.
+      return.
+    endif.
+
+    read_currency( ).
+    if gv_error = abap_true.
+      return.
+    endif.
+
+    read_customizing( ).
+    if gv_error = abap_true.
+      return.
+    endif.
+
+    validate_customizing( ).
+    if gv_error = abap_true.
+      return.
+    endif.
+
+    prepare_rule_scopes( ).
+
+    prepare_order_scope( ).
+    read_order_totals( ).
+
+    build_summary_data( ).
+    apply_formula_lines( ).
+
+    loop at gt_summary into data(ls_summary).
+      append value #( soiline    = ls_summary-soiline
+                      outline    = ls_summary-outline
+                      text       = ls_summary-text
+                      total      = ls_summary-line_sum
+                      waers      = ls_summary-waers
+                      is_formula = ls_summary-is_formula ) to rt_line.
+    endloop.
+
+  endmethod.
+
+
+  method get_messages.
+*---------------------------------------------------------------------*
+* Messages collected during the last run
+*---------------------------------------------------------------------*
+    rt_messages = gt_messages.
+  endmethod.
+
+
+  method check_authority.
+*---------------------------------------------------------------------*
+* Company code authorization (centralised check, display)
+*---------------------------------------------------------------------*
+* Same call as CHECK_AUTHORITY in Y0000CO_SOI_NEW. The behaviour on a
+* failed check is defined in Y0000CO_FI_AUTHORITY_CHECKS.
+*---------------------------------------------------------------------*
+    data: lv_actvt type c length 2.
+
+    lv_actvt = '03'.
+
+    perform authority_f_bkpf_buk
+      in program y0000co_fi_authority_checks
+      using gv_bukrs lv_actvt.
+  endmethod.
+
+
+  method add_message.
+*---------------------------------------------------------------------*
+* Collect a message instead of sending it
+*---------------------------------------------------------------------*
+* A query provider has no dialog: MESSAGE statements of the report are
+* replaced by this method. IV_ERROR stops the run.
+*---------------------------------------------------------------------*
+    append iv_text to gt_messages.
+
+    if iv_error = abap_true.
+      gv_error = abap_true.
+    endif.
+  endmethod.
+
+
+  method validate_company_code.
+*---------------------------------------------------------------------*
+* Company code must belong to controlling area 2000
+*---------------------------------------------------------------------*
+* Same check as VALIDATE_SELECTION_SCREEN of the report (TKA02).
+*---------------------------------------------------------------------*
+    select single bukrs
+      from tka02
+      where kokrs = @gc_kokrs
+        and bukrs = @gv_bukrs
+      into @data(lv_bukrs_chk).
+
+    if sy-subrc <> 0.
+      add_message( iv_text  = |Company code { gv_bukrs } not assigned to controlling area { gc_kokrs }|
+                   iv_error = abap_true ).
+    endif.
+  endmethod.
+
+
+  method read_currency.
+*---------------------------------------------------------------------*
+* Read the company code currency
+*---------------------------------------------------------------------*
+    select single waers
+      from t001
+      where bukrs = @gv_bukrs
+      into @gv_waers.
+
+    if sy-subrc <> 0.
+      add_message( iv_text  = |Invalid company code { gv_bukrs }|
+                   iv_error = abap_true ).
+    endif.
+  endmethod.
+
+
+  method read_customizing.
+*---------------------------------------------------------------------*
+* Read SOI structure, rules and formula customizing
+*---------------------------------------------------------------------*
+* Every SELECT is restricted to the selected version: reading any of
+* these tables without SOIVAR would mix the rows of all versions.
+* Text lookup prefers the logon language and falls back to
+* GC_FALLBACK_LANGU so a missing translation doesn't drop the line.
+* The texts are read INTO TABLE @DATA(...): a SELECT into a pre-typed
+* table maps by position, not by name (blank texts in the report).
+*---------------------------------------------------------------------*
+    select soiline, outline
+      from y0000co_nsoi01
+      where soivar = @gv_soivar
+      order by outline
+      into table @data(lt_soi01_base).
+
+    if lt_soi01_base is initial.
+      add_message( iv_text  = |No customizing for SOI version { gv_soivar } in Y0000CO_NSOI01|
+                   iv_error = abap_true ).
+      return.
+    endif.
+
+    select soiline, spras, text
+      from y0000co_nsoi01t
+      for all entries in @lt_soi01_base
+      where soivar  = @gv_soivar
+        and soiline = @lt_soi01_base-soiline
+        and spras in ( @sy-langu, @gc_fallback_langu )
+      into table @data(lt_texts).
+
+    clear gt_soi01.
+    loop at lt_soi01_base into data(ls_base).
+      data(lv_text) = value y0000co_nsoi01t-text( ).
+
+      read table lt_texts into data(ls_text)
+        with key soiline = ls_base-soiline spras = sy-langu.
+      if sy-subrc <> 0.
+        read table lt_texts into ls_text
+          with key soiline = ls_base-soiline spras = gc_fallback_langu.
+      endif.
+
+      if sy-subrc = 0.
+        lv_text = ls_text-text.
+      endif.
+
+      append value ty_soi01(
+        soiline = ls_base-soiline
+        outline = ls_base-outline
+        text    = lv_text ) to gt_soi01.
+    endloop.
+
+    select soiline,
+           method,
+           kokrs,
+           ksgru,
+           kagru
+      from y0000co_nsoi02
+      where soivar = @gv_soivar
+        and kokrs  = @gc_kokrs
+        and method in ( 'C', 'A', 'R' )
+      into table @gt_rule.
+
+    select soiline, comp_soiline, oper_type
+      from y0000co_nsoi03
+      where soivar = @gv_soivar
+      into table @gt_formula.
+  endmethod.
+
+
+  method validate_customizing.
+*---------------------------------------------------------------------*
+* Validate customizing consistency
+*---------------------------------------------------------------------*
+* METHOD A always needs a cost element group, and a SOI line must not
+* mix formula rules (R) with extraction rules (C/A): extracted values
+* would be silently discarded once APPLY_FORMULA_LINES recalculates
+* the line from the formula.
+*---------------------------------------------------------------------*
+    data lt_soilines type sorted table of y0000co_nsoi02-soiline with unique key table_line.
+
+    loop at gt_rule into data(ls_rule_a) where method = 'A' and kagru is initial.
+      add_message( iv_text  = |Method A requires a cost element group in Y0000CO_NSOI02 (SOI line { ls_rule_a-soiline })|
+                   iv_error = abap_true ).
+    endloop.
+
+    loop at gt_rule into data(ls_rule).
+      insert ls_rule-soiline into table lt_soilines.
+    endloop.
+
+    loop at lt_soilines into data(lv_soiline).
+      data(lv_has_formula)    = abap_false.
+      data(lv_has_extraction) = abap_false.
+
+      loop at gt_rule into data(ls_check) where soiline = lv_soiline.
+        if ls_check-method = 'R'.
+          lv_has_formula = abap_true.
+        else.
+          lv_has_extraction = abap_true.
+        endif.
+      endloop.
+
+      if lv_has_formula = abap_true and lv_has_extraction = abap_true.
+        add_message( iv_text  = |SOI line { lv_soiline } mixes formula (R) and extraction rules|
+                     iv_error = abap_true ).
+      endif.
+    endloop.
+  endmethod.
+
+
+  method get_set_values.
+*---------------------------------------------------------------------*
+* Expand a SET via G_SET_TREE_IMPORT
+*---------------------------------------------------------------------*
+    data: lt_set_values type standard table of setvalues with empty key.
+
+    clear: ct_values, cv_found.
+
+    call function 'G_SET_TREE_IMPORT'
+      exporting
+        setid      = iv_setid
+      tables
+        set_values = lt_set_values
+      exceptions
+        others     = 1.
+
+    if sy-subrc <> 0.
+      return.
+    endif.
+
+    cv_found = abap_true.
+
+    loop at lt_set_values into data(ls_set).
+      append value #( from = ls_set-from
+                      to   = ls_set-to ) to ct_values.
+    endloop.
+  endmethod.
+
+
+  method resolve_cc_by_group_bukrs.
+*---------------------------------------------------------------------*
+* Resolve a Cost Center Group to cost centers for the company code
+*---------------------------------------------------------------------*
+    data: lv_setid       type sethier-setid,
+          lt_values      type tt_set_value,
+          lt_kostl_range type range of csks-kostl.
+
+    clear: ct_costcenter, cv_found.
+
+    if iv_ksgru is initial.
+      return.
+    endif.
+
+    concatenate '0101' iv_kokrs iv_ksgru into lv_setid respecting blanks.
+
+    get_set_values(
+      exporting iv_setid  = lv_setid
+      changing  ct_values = lt_values
+                cv_found  = cv_found ).
+
+    if cv_found = abap_false.
+      return.
+    endif.
+
+    loop at lt_values into data(ls_value).
+      if ls_value-from is initial.
+        continue.
+      endif.
+
+      append value #(
+        sign   = 'I'
+        option = cond #( when ls_value-to is initial
+                           or ls_value-to = ls_value-from
+                         then 'EQ'
+                         else 'BT' )
+        low    = ls_value-from
+        high   = cond #( when ls_value-to is initial
+                           or ls_value-to = ls_value-from
+                         then ''
+                         else ls_value-to )
+      ) to lt_kostl_range.
+    endloop.
+
+    if lt_kostl_range is initial.
+      return.
+    endif.
+
+    select distinct kostl
+      from csks
+      where kokrs = @iv_kokrs
+        and bukrs = @gv_bukrs
+        and kostl in @lt_kostl_range
+      into table @data(lt_kostl).
+
+    loop at lt_kostl into data(lv_kostl).
+      insert value #( kostl = lv_kostl ) into table ct_costcenter.
+    endloop.
+  endmethod.
+
+
+  method build_objnr_from_costcenters.
+*---------------------------------------------------------------------*
+* Build KS.../KL...* object numbers for a set of cost centers
+*---------------------------------------------------------------------*
+    data ls_objnr type ty_obj_scope.
+
+    clear ct_objnr.
+
+    loop at it_costcenter into data(ls_cost).
+      clear ls_objnr.
+      ls_objnr-objnr = |KS{ gc_kokrs }{ ls_cost-kostl }|.
+      insert ls_objnr into table ct_objnr.
+
+      clear ls_objnr.
+      ls_objnr-objnr = |KL{ gc_kokrs }{ ls_cost-kostl }*|.
+      insert ls_objnr into table ct_objnr.
+    endloop.
+  endmethod.
+
+
+  method resolve_kstar_group.
+*---------------------------------------------------------------------*
+* Resolve a Cost Element Group to a KSTAR range
+*---------------------------------------------------------------------*
+    data: lv_ktopl  type ktopl,
+          lv_setid  type sethier-setid,
+          lt_values type tt_set_value.
+
+    clear: ct_kstar, cv_found.
+
+    if iv_kagru is initial.
+      return.
+    endif.
+
+    select single ktopl
+      from tka01
+      where kokrs = @iv_kokrs
+      into @lv_ktopl.
+
+    if sy-subrc <> 0 or lv_ktopl is initial.
+      return.
+    endif.
+
+    concatenate '0102' lv_ktopl iv_kagru into lv_setid respecting blanks.
+    get_set_values(
+      exporting iv_setid  = lv_setid
+      changing  ct_values = lt_values
+                cv_found  = cv_found ).
+
+    if cv_found = abap_false.
+      return.
+    endif.
+
+    loop at lt_values into data(ls_val) where from is not initial.
+      append value #(
+        sign   = 'I'
+        option = cond #( when ls_val-to is initial
+                           or ls_val-to = ls_val-from
+                         then 'EQ'
+                         else 'BT' )
+        low    = ls_val-from
+        high   = cond #( when ls_val-to is initial
+                           or ls_val-to = ls_val-from
+                         then ''
+                         else ls_val-to )
+      ) to ct_kstar.
+    endloop.
+  endmethod.
+
+
+  method prepare_order_scope.
+*---------------------------------------------------------------------*
+* Read the process order SET (METHOD A object scope)
+*---------------------------------------------------------------------*
+* SET name pattern INTORD_<BUKRS><GJAHR>.CCSS; SETLEAF-VALFROM holds
+* the order number, and the CO object number is built as
+* OBJNR = 'OR' + order number. Process orders carry actuals only: a
+* plan run (WRTTP <> 04) leaves the cache empty, which also skips
+* READ_ORDER_TOTALS and every METHOD A rule in BUILD_SUMMARY_DATA.
+*---------------------------------------------------------------------*
+    data: lv_setname type setleaf-setname.
+
+    clear gt_order_cache.
+
+    if gv_wrttp <> '04'.
+      return.
+    endif.
+
+    concatenate 'INTORD_' gv_bukrs gv_gjahr '.CCSS' into lv_setname respecting blanks.
+
+    select valfrom
+      from setleaf
+      where setname = @lv_setname
+        and valfrom <> ''
+      into table @data(lt_orders).
+
+    if lt_orders is initial.
+      add_message( |No process orders found in SET { lv_setname }| ).
+      return.
+    endif.
+
+    loop at lt_orders into data(ls_order).
+      insert value #(
+        bukrs = gv_bukrs
+        gjahr = gv_gjahr
+        objnr = |OR{ ls_order-valfrom }| ) into table gt_order_cache.
+    endloop.
+  endmethod.
+
+
+  method read_order_totals.
+*---------------------------------------------------------------------*
+* Read COSP/COSS totals for the whole process order SET
+*---------------------------------------------------------------------*
+* Reads once for the whole run, independent of KAGRU, in batches of
+* GC_ORDER_BATCH_SIZE orders (see READ_ORDER_TOTALS_BATCH). The KSTAR
+* range is narrowed to the groups any METHOD A rule needs; it unions
+* ranges across METHOD A rules, which is safe because only ONE object
+* scope (the order SET) is read here.
+*---------------------------------------------------------------------*
+    constants gc_order_batch_size type i value 5000.
+
+    data: lt_r_kstar type tt_r_kstar,
+          lt_r_objnr type tt_r_objnr.
+
+    clear gt_order_totals.
+
+    if gt_order_cache is initial.
+      return.
+    endif.
+
+    loop at gt_rule into data(ls_rule_a) where method = 'A'.
+      loop at gt_kstar_cache into data(ls_kstar_a)
+        where kokrs = ls_rule_a-kokrs and kagru = ls_rule_a-kagru.
+        append value #(
+          sign   = ls_kstar_a-sign
+          option = ls_kstar_a-option
+          low    = ls_kstar_a-low
+          high   = ls_kstar_a-high ) to lt_r_kstar.
+      endloop.
+    endloop.
+
+    sort lt_r_kstar.
+    delete adjacent duplicates from lt_r_kstar comparing all fields.
+
+    if lt_r_kstar is initial.
+      return.
+    endif.
+
+    loop at gt_order_cache into data(ls_order_scope).
+      append value #( sign = 'I' option = 'EQ' low = ls_order_scope-objnr ) to lt_r_objnr.
+
+      if lines( lt_r_objnr ) >= gc_order_batch_size.
+        read_order_totals_batch(
+          it_r_objnr = lt_r_objnr
+          it_r_kstar = lt_r_kstar ).
+        clear lt_r_objnr.
+      endif.
+    endloop.
+
+    if lt_r_objnr is not initial.
+      read_order_totals_batch(
+        it_r_objnr = lt_r_objnr
+        it_r_kstar = lt_r_kstar ).
+    endif.
+  endmethod.
+
+
+  method read_order_totals_batch.
+*---------------------------------------------------------------------*
+* Read one batch of the process order OBJNR range
+*---------------------------------------------------------------------*
+* Plain row fetch summed in ABAP - GROUP BY/SUM() was tried in the
+* report and reverted because it does not scale with large order
+* counts. If the WHERE clause is too large for the database interface
+* (DBSQL_STMNT_TOO_LARGE), the batch is split in half and each half is
+* retried recursively; any other Open SQL DB error is re-raised.
+*---------------------------------------------------------------------*
+    data: lv_half      type i,
+          lt_r_objnr_a type tt_r_objnr,
+          lt_r_objnr_b type tt_r_objnr.
+
+    try.
+        select objnr, kstar,
+               wog001, wog002, wog003, wog004,
+               wog005, wog006, wog007, wog008,
+               wog009, wog010, wog011, wog012,
+               wog013, wog014, wog015, wog016
+          from v_coss_view
+          where lednr = @gc_lednr
+            and gjahr = @gv_gjahr
+            and wrttp = @gv_wrttp
+            and versn = @gv_versn
+            and kstar in @it_r_kstar
+            and objnr in @it_r_objnr
+            and (
+                 wog001 <> 0 or wog002 <> 0 or
+                 wog003 <> 0 or wog004 <> 0 or
+                 wog005 <> 0 or wog006 <> 0 or
+                 wog007 <> 0 or wog008 <> 0 or
+                 wog009 <> 0 or wog010 <> 0 or
+                 wog011 <> 0 or wog012 <> 0 or
+                 wog013 <> 0 or wog014 <> 0 or
+                 wog015 <> 0 or wog016 <> 0
+            )
+          into table @data(lt_coss).
+
+        loop at lt_coss into data(ls_coss).
+          insert corresponding #( ls_coss ) into table gt_order_totals.
+        endloop.
+
+        select objnr, kstar,
+               wog001, wog002, wog003, wog004,
+               wog005, wog006, wog007, wog008,
+               wog009, wog010, wog011, wog012,
+               wog013, wog014, wog015, wog016
+          from v_cosp_view
+          where lednr = @gc_lednr
+            and gjahr = @gv_gjahr
+            and wrttp = @gv_wrttp
+            and versn = @gv_versn
+            and kstar in @it_r_kstar
+            and objnr in @it_r_objnr
+            and (
+                 wog001 <> 0 or wog002 <> 0 or
+                 wog003 <> 0 or wog004 <> 0 or
+                 wog005 <> 0 or wog006 <> 0 or
+                 wog007 <> 0 or wog008 <> 0 or
+                 wog009 <> 0 or wog010 <> 0 or
+                 wog011 <> 0 or wog012 <> 0 or
+                 wog013 <> 0 or wog014 <> 0 or
+                 wog015 <> 0 or wog016 <> 0
+            )
+          into table @data(lt_cosp).
+
+        loop at lt_cosp into data(ls_cosp).
+          insert corresponding #( ls_cosp ) into table gt_order_totals.
+        endloop.
+
+      catch cx_sy_open_sql_db into data(lx_sql).
+        if lx_sql->kernel_errid = 'DBSQL_STMNT_TOO_LARGE' and lines( it_r_objnr ) > 1.
+          lv_half = lines( it_r_objnr ) / 2.
+          append lines of it_r_objnr from 1 to lv_half to lt_r_objnr_a.
+          append lines of it_r_objnr from lv_half + 1 to lines( it_r_objnr ) to lt_r_objnr_b.
+
+          read_order_totals_batch(
+            it_r_objnr = lt_r_objnr_a
+            it_r_kstar = it_r_kstar ).
+          read_order_totals_batch(
+            it_r_objnr = lt_r_objnr_b
+            it_r_kstar = it_r_kstar ).
+        else.
+          raise exception lx_sql.
+        endif.
+    endtry.
+  endmethod.
+
+
+  method periods_from_wog.
+*---------------------------------------------------------------------*
+* Copy WOGnnn columns into a VALnnn period structure
+*---------------------------------------------------------------------*
+    data lv_period type ty_period.
+
+    field-symbols: <lv_src> type any,
+                   <lv_tgt> type any.
+
+    clear cs_periods.
+
+    do 16 times.
+      lv_period = sy-index.
+
+      assign component |WOG{ lv_period }| of structure iv_source to <lv_src>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      assign component |VAL{ lv_period }| of structure cs_periods to <lv_tgt>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      <lv_tgt> = <lv_src>.
+    enddo.
+  endmethod.
+
+
+  method accumulate_periods.
+*---------------------------------------------------------------------*
+* Add one period structure into a running total
+*---------------------------------------------------------------------*
+    data lv_period type ty_period.
+
+    field-symbols: <lv_add> type any,
+                   <lv_tot> type any.
+
+    do 16 times.
+      lv_period = sy-index.
+
+      assign component |VAL{ lv_period }| of structure is_add to <lv_add>.
+      assign component |VAL{ lv_period }| of structure cs_total to <lv_tot>.
+      if sy-subrc = 0.
+        <lv_tot> = <lv_tot> + <lv_add>.
+      endif.
+    enddo.
+  endmethod.
+
+
+  method add_periods_to_summary.
+*---------------------------------------------------------------------*
+* Accumulate a period structure into the SOI summary line
+*---------------------------------------------------------------------*
+* Only the periods GV_PERV to GV_PERB are added (1 to 16 here).
+*---------------------------------------------------------------------*
+    data lv_period type ty_period.
+
+    field-symbols: <lv_src> type any,
+                   <lv_tgt> type any.
+
+    do gv_perb times.
+      if sy-index < gv_perv.
+        continue.
+      endif.
+
+      lv_period = sy-index.
+
+      assign component |VAL{ lv_period }| of structure is_periods to <lv_src>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      assign component |VAL{ lv_period }| of structure cs_summary to <lv_tgt>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      <lv_tgt> = <lv_tgt> + <lv_src>.
+    enddo.
+  endmethod.
+
+
+  method select_totals_for_rule.
+*---------------------------------------------------------------------*
+* Read and accumulate COSP/COSS totals for one extraction rule
+*---------------------------------------------------------------------*
+* METHOD A rules filter the already-read GT_ORDER_TOTALS in memory by
+* KSTAR instead of querying the database again. Other methods query
+* COSP/COSS scoped ONLY to this rule's own OBJNR/KSTAR ranges - never
+* unioned with other rules (reverted in the report: cross-product and
+* slower). GT_TOTALS_CACHE avoids redundant work when several SOI
+* lines share an identical rule.
+*---------------------------------------------------------------------*
+    data: lt_r_objnr       type tt_r_objnr,
+          ls_periods       type ty_period_sum,
+          ls_periods_total type ty_period_sum,
+          ls_cache_entry   type ty_totals_cache.
+
+    field-symbols <ls_objnr_range> like line of lt_r_objnr.
+
+    if it_objnr is initial or it_kstar is initial.
+      return.
+    endif.
+
+    ls_cache_entry-method = is_rule-method.
+    ls_cache_entry-kokrs  = is_rule-kokrs.
+    ls_cache_entry-bukrs  = iv_bukrs.
+    ls_cache_entry-ksgru  = is_rule-ksgru.
+    ls_cache_entry-kagru  = is_rule-kagru.
+
+    read table gt_totals_cache into data(ls_cached)
+      with table key method = ls_cache_entry-method
+                     kokrs  = ls_cache_entry-kokrs
+                     bukrs  = ls_cache_entry-bukrs
+                     ksgru  = ls_cache_entry-ksgru
+                     kagru  = ls_cache_entry-kagru.
+
+    if sy-subrc = 0.
+      add_periods_to_summary(
+        exporting is_periods = ls_cached-periods
+        changing  cs_summary = cs_summary ).
+      return.
+    endif.
+
+    if is_rule-method = 'A'.
+      loop at gt_order_totals into data(ls_order_row) where kstar in it_kstar.
+        periods_from_wog(
+          exporting iv_source  = ls_order_row
+          changing  cs_periods = ls_periods ).
+        accumulate_periods(
+          exporting is_add   = ls_periods
+          changing  cs_total = ls_periods_total ).
+      endloop.
+
+    else.
+      loop at it_objnr into data(ls_objnr).
+        append initial line to lt_r_objnr assigning <ls_objnr_range>.
+
+        <ls_objnr_range>-sign = 'I'.
+
+        case ls_objnr-objnr(2).
+          when 'KL'.
+            <ls_objnr_range>-option = 'CP'.
+          when others.
+            <ls_objnr_range>-option = 'EQ'.
+        endcase.
+
+        <ls_objnr_range>-low = ls_objnr-objnr.
+      endloop.
+
+      if lt_r_objnr is initial.
+        return.
+      endif.
+
+      select objnr, kstar,
+             wog001, wog002, wog003, wog004,
+             wog005, wog006, wog007, wog008,
+             wog009, wog010, wog011, wog012,
+             wog013, wog014, wog015, wog016
+        from v_coss_view
+        where lednr = @gc_lednr
+          and gjahr = @gv_gjahr
+          and wrttp = @gv_wrttp
+          and versn = @gv_versn
+          and kstar in @it_kstar
+          and objnr in @lt_r_objnr
+          and (
+               wog001 <> 0 or wog002 <> 0 or
+               wog003 <> 0 or wog004 <> 0 or
+               wog005 <> 0 or wog006 <> 0 or
+               wog007 <> 0 or wog008 <> 0 or
+               wog009 <> 0 or wog010 <> 0 or
+               wog011 <> 0 or wog012 <> 0 or
+               wog013 <> 0 or wog014 <> 0 or
+               wog015 <> 0 or wog016 <> 0
+          )
+        into table @data(lt_coss).
+
+      loop at lt_coss into data(ls_coss).
+        periods_from_wog(
+          exporting iv_source  = ls_coss
+          changing  cs_periods = ls_periods ).
+        accumulate_periods(
+          exporting is_add   = ls_periods
+          changing  cs_total = ls_periods_total ).
+      endloop.
+
+      select objnr, kstar,
+             wog001, wog002, wog003, wog004,
+             wog005, wog006, wog007, wog008,
+             wog009, wog010, wog011, wog012,
+             wog013, wog014, wog015, wog016
+        from v_cosp_view
+        where lednr = @gc_lednr
+          and gjahr = @gv_gjahr
+          and wrttp = @gv_wrttp
+          and versn = @gv_versn
+          and kstar in @it_kstar
+          and objnr in @lt_r_objnr
+          and (
+               wog001 <> 0 or wog002 <> 0 or
+               wog003 <> 0 or wog004 <> 0 or
+               wog005 <> 0 or wog006 <> 0 or
+               wog007 <> 0 or wog008 <> 0 or
+               wog009 <> 0 or wog010 <> 0 or
+               wog011 <> 0 or wog012 <> 0 or
+               wog013 <> 0 or wog014 <> 0 or
+               wog015 <> 0 or wog016 <> 0
+          )
+        into table @data(lt_cosp).
+
+      loop at lt_cosp into data(ls_cosp).
+        periods_from_wog(
+          exporting iv_source  = ls_cosp
+          changing  cs_periods = ls_periods ).
+        accumulate_periods(
+          exporting is_add   = ls_periods
+          changing  cs_total = ls_periods_total ).
+      endloop.
+    endif.
+
+    ls_cache_entry-periods = ls_periods_total.
+    insert ls_cache_entry into table gt_totals_cache.
+
+    add_periods_to_summary(
+      exporting is_periods = ls_periods_total
+      changing  cs_summary = cs_summary ).
+  endmethod.
+
+
+  method prepare_rule_scopes.
+*---------------------------------------------------------------------*
+* Build all cached object number / KSTAR scopes for every rule
+*---------------------------------------------------------------------*
+* Each distinct (KOKRS/BUKRS/KSGRU) or (KOKRS/KAGRU) combination is
+* expanded only once per run (the one-SET-expansion rule). Nothing
+* here depends on fiscal year, version or value type: the SETs are
+* read without a key date and CSKS is not filtered on validity. Must
+* run before READ_ORDER_TOTALS, which narrows the order read using
+* GT_KSTAR_CACHE. A group that fails to expand is reported as a
+* message (non-blocking), like REPORT_SET_ERRORS in the report.
+*---------------------------------------------------------------------*
+    data: lt_costcenter type tt_kostl_scope,
+          lt_objnr      type tt_obj_scope,
+          lt_kstar      type tt_r_kstar,
+          lv_found      type abap_bool.
+
+    clear:
+      gt_cc_cache,
+      gt_kstar_cache.
+
+    loop at gt_rule into data(ls_rule).
+      if ls_rule-method = 'R'.
+        continue.
+      endif.
+
+      if ls_rule-ksgru is not initial.
+        read table gt_cc_cache with key kokrs = ls_rule-kokrs
+                                        bukrs = gv_bukrs
+                                        ksgru = ls_rule-ksgru
+                               transporting no fields.
+        if sy-subrc <> 0.
+          clear: lt_costcenter, lt_objnr.
+
+          resolve_cc_by_group_bukrs(
+            exporting iv_kokrs      = ls_rule-kokrs
+                      iv_ksgru      = ls_rule-ksgru
+            changing  ct_costcenter = lt_costcenter
+                      cv_found      = lv_found ).
+
+          if lv_found = abap_false.
+            add_message( |Cost center group { ls_rule-ksgru } (KOKRS { ls_rule-kokrs }) could not be expanded| ).
+          endif.
+
+          build_objnr_from_costcenters(
+            exporting it_costcenter = lt_costcenter
+            changing  ct_objnr      = lt_objnr ).
+
+          loop at lt_objnr into data(ls_objnr).
+            insert value ty_cc_cache(
+              kokrs = ls_rule-kokrs
+              bukrs = gv_bukrs
+              ksgru = ls_rule-ksgru
+              objnr = ls_objnr-objnr ) into table gt_cc_cache.
+          endloop.
+        endif.
+      endif.
+
+      if ls_rule-kagru is not initial.
+        read table gt_kstar_cache with key kokrs = ls_rule-kokrs
+                                           kagru = ls_rule-kagru
+                                  transporting no fields.
+        if sy-subrc <> 0.
+          clear lt_kstar.
+
+          resolve_kstar_group(
+            exporting iv_kokrs = ls_rule-kokrs
+                      iv_kagru = ls_rule-kagru
+            changing  ct_kstar = lt_kstar
+                      cv_found = lv_found ).
+
+          if lv_found = abap_false.
+            add_message( |Cost element group { ls_rule-kagru } (KOKRS { ls_rule-kokrs }) could not be expanded| ).
+          endif.
+
+          loop at lt_kstar into data(ls_kstar).
+            insert value ty_kstar_cache(
+              kokrs  = ls_rule-kokrs
+              kagru  = ls_rule-kagru
+              sign   = ls_kstar-sign
+              option = ls_kstar-option
+              low    = ls_kstar-low
+              high   = ls_kstar-high ) into table gt_kstar_cache.
+          endloop.
+        endif.
+      endif.
+
+    endloop.
+  endmethod.
+
+
+  method get_cached_objnr.
+*---------------------------------------------------------------------*
+* Look up cached cost center object numbers for one rule
+*---------------------------------------------------------------------*
+    clear ct_objnr.
+
+    loop at gt_cc_cache into data(ls_cc_cache)
+      where kokrs = iv_kokrs
+        and bukrs = iv_bukrs
+        and ksgru = iv_ksgru.
+      insert value #( objnr = ls_cc_cache-objnr ) into table ct_objnr.
+    endloop.
+  endmethod.
+
+
+  method get_cached_order_objnr.
+*---------------------------------------------------------------------*
+* Look up cached process order object numbers
+*---------------------------------------------------------------------*
+    clear ct_objnr.
+
+    loop at gt_order_cache into data(ls_order_cache)
+      where bukrs = gv_bukrs
+        and gjahr = gv_gjahr.
+      insert value #( objnr = ls_order_cache-objnr ) into table ct_objnr.
+    endloop.
+  endmethod.
+
+
+  method get_cached_kstar.
+*---------------------------------------------------------------------*
+* Look up the cached KSTAR range for one rule
+*---------------------------------------------------------------------*
+    clear ct_kstar.
+
+    loop at gt_kstar_cache into data(ls_kstar_cache)
+      where kokrs = iv_kokrs
+        and kagru = iv_kagru.
+      append value #(
+        sign   = ls_kstar_cache-sign
+        option = ls_kstar_cache-option
+        low    = ls_kstar_cache-low
+        high   = ls_kstar_cache-high ) to ct_kstar.
+    endloop.
+  endmethod.
+
+
+  method build_summary_data.
+*---------------------------------------------------------------------*
+* Build the SOI summary table from every rule's accumulated totals
+*---------------------------------------------------------------------*
+* Same logic as the report, without the ALV colour column.
+*---------------------------------------------------------------------*
+    data: ls_summary type ty_summary,
+          lt_objnr   type tt_obj_scope,
+          lt_kstar   type tt_r_kstar.
+
+    clear gt_summary.
+
+    loop at gt_soi01 into data(ls_soi01).
+      clear ls_summary.
+      ls_summary-soiline = ls_soi01-soiline.
+      ls_summary-outline = ls_soi01-outline.
+      ls_summary-text    = ls_soi01-text.
+      ls_summary-waers   = gv_waers.
+
+      loop at gt_rule into data(ls_rule) where soiline = ls_soi01-soiline.
+        if ls_rule-method = 'R'.
+          ls_summary-is_formula = abap_true.
+          continue.
+        endif.
+
+        clear: lt_objnr, lt_kstar.
+
+        if ls_rule-method = 'A'.
+
+          if gv_wrttp <> '04'.
+            continue.
+          endif.
+
+          get_cached_order_objnr( changing ct_objnr = lt_objnr ).
+
+        else.
+
+          get_cached_objnr(
+            exporting iv_kokrs = ls_rule-kokrs
+                      iv_bukrs = gv_bukrs
+                      iv_ksgru = ls_rule-ksgru
+            changing  ct_objnr = lt_objnr ).
+
+        endif.
+
+        get_cached_kstar(
+          exporting iv_kokrs = ls_rule-kokrs
+                    iv_kagru = ls_rule-kagru
+          changing  ct_kstar = lt_kstar ).
+
+        if lt_objnr is initial or lt_kstar is initial.
+          continue.
+        endif.
+
+        select_totals_for_rule(
+          exporting is_rule    = ls_rule
+                    iv_bukrs   = gv_bukrs
+                    it_objnr   = lt_objnr
+                    it_kstar   = lt_kstar
+          changing  cs_summary = ls_summary ).
+      endloop.
+
+      if ls_summary-is_formula = abap_false.
+        ls_summary-line_sum =
+            ls_summary-val001 + ls_summary-val002 + ls_summary-val003 + ls_summary-val004 +
+            ls_summary-val005 + ls_summary-val006 + ls_summary-val007 + ls_summary-val008 +
+            ls_summary-val009 + ls_summary-val010 + ls_summary-val011 + ls_summary-val012 +
+            ls_summary-val013 + ls_summary-val014 + ls_summary-val015 + ls_summary-val016.
+      endif.
+
+      append ls_summary to gt_summary.
+    endloop.
+  endmethod.
+
+
+  method apply_formula_lines.
+*---------------------------------------------------------------------*
+* Resolve METHOD R formula lines in dependency order
+*---------------------------------------------------------------------*
+* Multi-pass resolution: a formula line is only calculated once every
+* SOI line it references (extraction or formula) is already resolved,
+* so formulas may reference other formulas regardless of OUTLINE.
+* Lines left unresolved after a pass with no progress have a circular
+* or missing reference; they are reported and left at zero.
+*---------------------------------------------------------------------*
+    types tt_soiline type sorted table of y0000co_nsoi01-soiline with unique key table_line.
+
+    data:
+      lt_resolved           type tt_soiline,
+      lt_pending            type standard table of y0000co_nsoi01-soiline with empty key,
+      lt_resolved_this_pass type standard table of y0000co_nsoi01-soiline with empty key,
+      lv_changed            type abap_bool,
+      lv_ready              type abap_bool,
+      lv_period_num         type n length 3,
+      lv_period             type ty_period.
+
+    field-symbols:
+      <ls_sum> type ty_summary,
+      <ls_cmp> type ty_summary,
+      <lv_tgt> type any,
+      <lv_src> type any.
+
+    loop at gt_summary into data(ls_seed) where is_formula = abap_false.
+      insert ls_seed-soiline into table lt_resolved.
+    endloop.
+
+    loop at gt_summary into data(ls_formula_line) where is_formula = abap_true.
+      append ls_formula_line-soiline to lt_pending.
+    endloop.
+
+    do.
+      lv_changed = abap_false.
+      clear lt_resolved_this_pass.
+
+      loop at lt_pending into data(lv_soiline).
+        lv_ready = abap_true.
+
+        loop at gt_formula into data(ls_formula_dep) where soiline = lv_soiline.
+          read table lt_resolved with table key table_line = ls_formula_dep-comp_soiline
+            transporting no fields.
+          if sy-subrc <> 0.
+            lv_ready = abap_false.
+            exit.
+          endif.
+        endloop.
+
+        if lv_ready = abap_false.
+          continue.
+        endif.
+
+        read table gt_summary assigning <ls_sum> with key soiline = lv_soiline.
+        if sy-subrc <> 0.
+          append lv_soiline to lt_resolved_this_pass.
+          lv_changed = abap_true.
+          continue.
+        endif.
+
+        clear: <ls_sum>-val001, <ls_sum>-val002, <ls_sum>-val003, <ls_sum>-val004,
+               <ls_sum>-val005, <ls_sum>-val006, <ls_sum>-val007, <ls_sum>-val008,
+               <ls_sum>-val009, <ls_sum>-val010, <ls_sum>-val011, <ls_sum>-val012,
+               <ls_sum>-val013, <ls_sum>-val014, <ls_sum>-val015, <ls_sum>-val016,
+               <ls_sum>-line_sum.
+
+        loop at gt_formula into data(ls_formula) where soiline = lv_soiline.
+          read table gt_summary assigning <ls_cmp> with key soiline = ls_formula-comp_soiline.
+          if sy-subrc <> 0.
+            continue.
+          endif.
+
+          do gv_perb times.
+            if sy-index < gv_perv.
+              continue.
+            endif.
+
+            lv_period_num = sy-index.
+            lv_period = lv_period_num.
+
+            assign component |VAL{ lv_period }| of structure <ls_sum> to <lv_tgt>.
+            if sy-subrc <> 0.
+              continue.
+            endif.
+
+            assign component |VAL{ lv_period }| of structure <ls_cmp> to <lv_src>.
+            if sy-subrc <> 0.
+              continue.
+            endif.
+
+            case ls_formula-oper_type.
+              when '+'.
+                <lv_tgt> = <lv_tgt> + <lv_src>.
+              when '-'.
+                <lv_tgt> = <lv_tgt> - <lv_src>.
+            endcase.
+          enddo.
+        endloop.
+
+        <ls_sum>-line_sum =
+          <ls_sum>-val001 + <ls_sum>-val002 + <ls_sum>-val003 + <ls_sum>-val004 +
+          <ls_sum>-val005 + <ls_sum>-val006 + <ls_sum>-val007 + <ls_sum>-val008 +
+          <ls_sum>-val009 + <ls_sum>-val010 + <ls_sum>-val011 + <ls_sum>-val012 +
+          <ls_sum>-val013 + <ls_sum>-val014 + <ls_sum>-val015 + <ls_sum>-val016.
+
+        append lv_soiline to lt_resolved_this_pass.
+        lv_changed = abap_true.
+      endloop.
+
+      loop at lt_resolved_this_pass into lv_soiline.
+        insert lv_soiline into table lt_resolved.
+        delete lt_pending where table_line = lv_soiline.
+      endloop.
+
+      if lt_pending is initial.
+        exit.
+      endif.
+
+      if lv_changed = abap_false.
+        loop at lt_pending into lv_soiline.
+          add_message( |Formula SOI line { lv_soiline } skipped: circular/missing reference| ).
+        endloop.
+        exit.
+      endif.
+    enddo.
+  endmethod.
+
+endclass.
