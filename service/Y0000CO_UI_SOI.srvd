@@ -1,0 +1,4 @@
+@EndUserText.label: 'SOI report'
+define service Y0000CO_UI_SOI {
+  expose Y0000CO_C_SOILINE as SOILine;
+}

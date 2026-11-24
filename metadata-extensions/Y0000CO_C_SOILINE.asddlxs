@@ -1,0 +1,31 @@
+@Metadata.layer: #CUSTOMER
+@UI.headerInfo: { typeName: 'SOI Line', typeNamePlural: 'Statement of Income' }
+annotate entity Y0000CO_C_SOILINE with
+{
+  @UI.selectionField: [{ position: 10 }]
+  SoiVersion;
+
+  @UI.selectionField: [{ position: 20 }]
+  FiscalYear;
+
+  @UI.selectionField: [{ position: 30 }]
+  CompanyCode;
+
+  @UI.selectionField: [{ position: 40 }]
+  ValueType;
+
+  @UI.selectionField: [{ position: 50 }]
+  Version;
+
+  @UI.lineItem: [{ position: 10 }]
+  SoiLine;
+
+  @UI.lineItem: [{ position: 20 }]
+  SoiLineText;
+
+  @UI.lineItem: [{ position: 30 }]
+  TotalAmount;
+
+  @UI.hidden: true
+  Outline;
+}
