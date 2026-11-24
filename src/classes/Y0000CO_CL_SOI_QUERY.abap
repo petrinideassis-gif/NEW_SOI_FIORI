@@ -16,9 +16,10 @@
 *  Fills the custom entity Y0000CO_C_SOILINE for the Fiori preview of
 *  the Statement of Income (SOI).
 *
-*  Stage 2 (this version): the totals come from the SOI engine
-*  Y0000CO_CL_SOI_ENGINE in total mode (periods 1-16), a copy of the
-*  engine of report Y0000CO_SOI_NEW.
+*  The values come from the SOI engine Y0000CO_CL_SOI_ENGINE, a copy
+*  of the engine of report Y0000CO_SOI_NEW: periods 1-12, special
+*  periods 13-16, total over the period range, and the comparison
+*  against a second data set when a comparison field is filled.
 *
 *  Typical business use:
 *  Controllers open the SOI preview, select version, year and company
@@ -60,11 +61,17 @@ class y0000co_cl_soi_query definition
 *---------------------------------------------------------------------*
     types:
       begin of ty_filter,
-        soivar type y0000co_nsoi00-soivar,
-        gjahr  type gjahr,
-        bukrs  type bukrs,
-        wrttp  type wrttp,
-        versn  type versn,
+        soivar  type y0000co_nsoi00-soivar,
+        gjahr   type gjahr,
+        bukrs   type bukrs,
+        wrttp   type wrttp,
+        versn   type versn,
+        perv    type monat,
+        perb    type monat,
+        gjahr2  type gjahr,
+        versn2  type versn,
+        wrttp2  type wrttp,
+        soiline type y0000co_nsoi01-soiline,
       end of ty_filter.
 
 *---------------------------------------------------------------------*
@@ -161,6 +168,18 @@ class y0000co_cl_soi_query implementation.
           rs_filter-wrttp = ls_value-low.
         when 'VERSION'.
           rs_filter-versn = ls_value-low.
+        when 'PERIODFROM'.
+          rs_filter-perv = ls_value-low.
+        when 'PERIODTO'.
+          rs_filter-perb = ls_value-low.
+        when 'COMPAREYEAR'.
+          rs_filter-gjahr2 = ls_value-low.
+        when 'COMPAREVERSION'.
+          rs_filter-versn2 = ls_value-low.
+        when 'COMPAREVALUETYPE'.
+          rs_filter-wrttp2 = ls_value-low.
+        when 'SOILINE'.
+          rs_filter-soiline = ls_value-low.
       endcase.
     endloop.
 
@@ -174,34 +193,81 @@ class y0000co_cl_soi_query implementation.
 * The engine is created per request: its caches live for one run only.
 * Without company code or fiscal year there is nothing to compute (both
 * are mandatory in the filter bar, so this is only a safeguard).
-* Engine messages (e.g. a SET that could not be expanded) are not shown
-* in stage 2; an engine error returns no lines.
+* A comparison is requested as soon as one comparison field is filled,
+* as IS_COMPARE_REQUESTED in the report. The filter values are copied
+* back into the key fields of every row, so the object page (which
+* reads one row by its key) gets the same numbers as the list.
+* Engine messages are not shown yet; an engine error returns no lines.
 *---------------------------------------------------------------------*
+
+    data: lv_period3 type n length 3,
+          lv_period2 type n length 2.
+
+    field-symbols: <lv_src> type any,
+                   <lv_tgt> type any.
 
     if is_filter-bukrs is initial or is_filter-gjahr is initial.
       return.
     endif.
 
+    data(lv_compare) = xsdbool( is_filter-gjahr2 is not initial
+                             or is_filter-versn2 is not initial
+                             or is_filter-wrttp2 is not initial ).
+
     data(lo_engine) = new y0000co_cl_soi_engine( ).
 
-    data(lt_lines) = lo_engine->run( value #( soivar = is_filter-soivar
-                                              bukrs  = is_filter-bukrs
-                                              gjahr  = is_filter-gjahr
-                                              versn  = is_filter-versn
-                                              wrttp  = is_filter-wrttp ) ).
+    data(lt_lines) = lo_engine->run( value #( soivar  = is_filter-soivar
+                                              bukrs   = is_filter-bukrs
+                                              gjahr   = is_filter-gjahr
+                                              versn   = is_filter-versn
+                                              wrttp   = is_filter-wrttp
+                                              perv    = is_filter-perv
+                                              perb    = is_filter-perb
+                                              compare = lv_compare
+                                              gjahr2  = is_filter-gjahr2
+                                              versn2  = is_filter-versn2
+                                              wrttp2  = is_filter-wrttp2 ) ).
 
     loop at lt_lines assigning field-symbol(<ls_line>).
-      append value #(
-        soiversion  = is_filter-soivar
-        fiscalyear  = is_filter-gjahr
-        companycode = is_filter-bukrs
-        valuetype   = is_filter-wrttp
-        version     = is_filter-versn
-        soiline     = <ls_line>-soiline
-        soilinetext = <ls_line>-text
-        outline     = <ls_line>-outline
-        totalamount = <ls_line>-total
-        currency    = <ls_line>-waers ) to rt_result.
+      if is_filter-soiline is not initial and <ls_line>-soiline <> is_filter-soiline.
+        continue.
+      endif.
+
+      data(ls_row) = value y0000co_c_soiline(
+        soiversion        = is_filter-soivar
+        fiscalyear        = is_filter-gjahr
+        companycode       = is_filter-bukrs
+        valuetype         = is_filter-wrttp
+        version           = is_filter-versn
+        periodfrom        = is_filter-perv
+        periodto          = is_filter-perb
+        compareyear       = is_filter-gjahr2
+        compareversion    = is_filter-versn2
+        comparevaluetype  = is_filter-wrttp2
+        soiline           = <ls_line>-soiline
+        soilinetext       = <ls_line>-text
+        outline           = <ls_line>-outline
+        totalamount       = <ls_line>-total
+        compareamount     = <ls_line>-total_cmp
+        differenceamount  = <ls_line>-diff_abs
+        differencepercent = <ls_line>-diff_pct
+        specialperiods    = <ls_line>-special
+        currency          = <ls_line>-waers ).
+
+*     Period columns: VAL001-VAL012 of the engine line into
+*     PERIOD01-PERIOD12 of the row.
+      do 12 times.
+        lv_period3 = sy-index.
+        lv_period2 = sy-index.
+        assign component |VAL{ lv_period3 }| of structure <ls_line> to <lv_src>.
+        assign component |PERIOD{ lv_period2 }| of structure ls_row to <lv_tgt>.
+        if <lv_src> is assigned and <lv_tgt> is assigned.
+          <lv_tgt> = <lv_src>.
+        endif.
+        unassign: <lv_src>, <lv_tgt>.
+      enddo.
+
+      append ls_row to rt_result.
     endloop.
 
   endmethod.

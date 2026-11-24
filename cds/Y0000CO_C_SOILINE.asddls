@@ -8,37 +8,138 @@ define root custom entity Y0000CO_C_SOILINE
 {
       @UI.selectionField: [{ position: 10 }]
       @Consumption.filter: { mandatory: true, defaultValue: 'STD' }
-  key SoiVersion  : y0000co_soivar;
+  key SoiVersion       : y0000co_soivar;
 
       @UI.selectionField: [{ position: 20 }]
       @Consumption.filter.mandatory: true
-  key FiscalYear  : gjahr;
+  key FiscalYear       : gjahr;
 
       @UI.selectionField: [{ position: 30 }]
       @Consumption.filter.mandatory: true
-  key CompanyCode : bukrs;
+  key CompanyCode      : bukrs;
 
       @UI.selectionField: [{ position: 40 }]
       @Consumption.filter.defaultValue: '04'
-  key ValueType   : wrttp;
+  key ValueType        : wrttp;
 
       @UI.selectionField: [{ position: 50 }]
       @Consumption.filter.defaultValue: '000'
-  key Version     : versn;
+  key Version          : versn;
 
-      @UI.lineItem: [{ position: 10 }]
+      @UI.selectionField: [{ position: 60 }]
+      @EndUserText.label: 'Period From'
+  key PeriodFrom       : monat;
+
+      @UI.selectionField: [{ position: 70 }]
+      @EndUserText.label: 'Period To'
+  key PeriodTo         : monat;
+
+      @UI.selectionField: [{ position: 80 }]
+      @EndUserText.label: 'Comparison Fiscal Year'
+  key CompareYear      : gjahr;
+
+      @UI.selectionField: [{ position: 90 }]
+      @EndUserText.label: 'Comparison Version'
+  key CompareVersion   : versn;
+
+      @UI.selectionField: [{ position: 100 }]
+      @EndUserText.label: 'Comparison Value Type'
+  key CompareValueType : wrttp;
+
+      @UI.lineItem: [{ position: 10, importance: #HIGH }]
       @UI.textArrangement: #TEXT_FIRST
       @ObjectModel.text.element: [ 'SoiLineText' ]
-  key SoiLine     : y0000co_soiline;
+  key SoiLine          : y0000co_soiline;
 
-      SoiLineText : abap.char(35);
+      @EndUserText.label: 'SOI Line Text'
+      SoiLineText      : abap.char(35);
 
       @UI.hidden: true
-      Outline     : abap.numc(4);
+      Outline          : abap.numc(4);
 
-      @UI.lineItem: [{ position: 20 }]
+      @UI.lineItem: [{ position: 20, importance: #HIGH }]
+      @EndUserText.label: 'Total'
       @Semantics.amount.currencyCode: 'Currency'
-      TotalAmount : abap.curr(15,2);
+      TotalAmount      : abap.curr(15,2);
 
-      Currency    : waers;
+      @UI.lineItem: [{ position: 30 }]
+      @EndUserText.label: 'Comparison Total'
+      @Semantics.amount.currencyCode: 'Currency'
+      CompareAmount    : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 40 }]
+      @EndUserText.label: 'Difference'
+      @Semantics.amount.currencyCode: 'Currency'
+      DifferenceAmount : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 45 }]
+      @EndUserText.label: 'Difference %'
+      DifferencePercent : abap.dec(9,2);
+
+      @UI.lineItem: [{ position: 60 }]
+      @EndUserText.label: 'Period 01'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period01         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 70 }]
+      @EndUserText.label: 'Period 02'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period02         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 80 }]
+      @EndUserText.label: 'Period 03'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period03         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 90 }]
+      @EndUserText.label: 'Period 04'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period04         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 100 }]
+      @EndUserText.label: 'Period 05'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period05         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 110 }]
+      @EndUserText.label: 'Period 06'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period06         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 120 }]
+      @EndUserText.label: 'Period 07'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period07         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 130 }]
+      @EndUserText.label: 'Period 08'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period08         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 140 }]
+      @EndUserText.label: 'Period 09'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period09         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 150 }]
+      @EndUserText.label: 'Period 10'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period10         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 160 }]
+      @EndUserText.label: 'Period 11'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period11         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 170 }]
+      @EndUserText.label: 'Period 12'
+      @Semantics.amount.currencyCode: 'Currency'
+      Period12         : abap.curr(15,2);
+
+      @UI.lineItem: [{ position: 180 }]
+      @EndUserText.label: 'Periods 13-16'
+      @Semantics.amount.currencyCode: 'Currency'
+      SpecialPeriods   : abap.curr(15,2);
+
+      Currency         : waers;
 }

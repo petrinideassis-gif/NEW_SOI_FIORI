@@ -1,5 +1,5 @@
 *----------------------------------------------------------------------*
-* Description : SOI engine for the Fiori preview (total mode)
+* Description : SOI engine for the Fiori preview
 *----------------------------------------------------------------------*
 * ABAP Name     : Y0000CO_CL_SOI_ENGINE
 * Author        : <SAP user ID>
@@ -14,7 +14,8 @@
 *----------------------------------------------------------------------*
 *  Purpose
 *  Computes the Statement of Income (SOI) lines for one company code,
-*  fiscal year, version and value type, in total mode (periods 1-16).
+*  fiscal year, version and value type over a period range (default
+*  1-16), optionally compared against a second data set.
 *  Used by the query provider Y0000CO_CL_SOI_QUERY of the SOI Fiori
 *  preview.
 *
@@ -35,16 +36,19 @@
 *  4. Expand the Process Order SET and read the order totals
 *  5. Accumulate COSP/COSS totals per extraction rule
 *  6. Resolve METHOD R formula lines in dependency order
-*  7. Return one line per SOI line with its total
+*  7. Optionally repeat steps 4-6 for the comparison data set
+*  8. Return one line per SOI line with periods, total and comparison
 *
 *  Important technical notes from development:
 *  - Controlling area (KOKRS) is fixed to '2000'; ledger LEDNR '00'
-*  - Total mode only: periods 1-16, including the special periods
+*  - One period range for both data sets instead of the report's
+*    display modes: blank = 1-16 (total mode), From/To = detail mode,
+*    To alone = the comparison cap P_CMPTO
 *  - Differences to Y0000CO_SOI_NEW: selection parameters P_BUKRS /
 *    P_SOIVAR / P_GJAHR / P_VERSN / P_WRTTP come from the run context
 *    (GV_BUKRS / GV_SOIVAR / GV_GJAHR / GV_VERSN / GV_WRTTP); dialog
 *    messages are collected in GT_MESSAGES (GET_MESSAGES) instead of
-*    being sent; no comparison, no detail mode, no drill-down, no ALV
+*    being sent; no drill-down, no ALV
 *  - Error that stops the run (unknown company code, company code not
 *    in KOKRS 2000, no customizing, inconsistent customizing): RUN
 *    returns no lines and GET_MESSAGES says why
@@ -63,22 +67,52 @@ class y0000co_cl_soi_engine definition
 * Run context and result
 *---------------------------------------------------------------------*
 * TY_CONTEXT replaces the selection screen of Y0000CO_SOI_NEW.
-* TY_LINE is one SOI line with its total over periods 1-16.
+* PERV / PERB bound the periods for BOTH data sets (1-16; the report's
+* total mode is 1-16, its detail mode the entered range, its P_CMPTO
+* cap is PERB). COMPARE requests a second data set (GJAHR2 / VERSN2 /
+* WRTTP2, each falling back to its main field when blank).
+* TY_LINE is one SOI line: periods 1-12, the special periods 13-16 as
+* one value, the total over PERV-PERB and the comparison columns.
 *---------------------------------------------------------------------*
     types:
+      ty_pct type p length 9 decimals 2.
+
+    types:
       begin of ty_context,
-        soivar type y0000co_nsoi00-soivar,
-        bukrs  type bukrs,
-        gjahr  type gjahr,
-        versn  type versn,
-        wrttp  type wrttp,
+        soivar  type y0000co_nsoi00-soivar,
+        bukrs   type bukrs,
+        gjahr   type gjahr,
+        versn   type versn,
+        wrttp   type wrttp,
+        perv    type i,
+        perb    type i,
+        compare type abap_bool,
+        gjahr2  type gjahr,
+        versn2  type versn,
+        wrttp2  type wrttp,
       end of ty_context,
 
       begin of ty_line,
         soiline    type y0000co_nsoi01-soiline,
         outline    type y0000co_nsoi01-outline,
         text       type y0000co_nsoi01t-text,
+        val001     type v_coss_view-wog001,
+        val002     type v_coss_view-wog001,
+        val003     type v_coss_view-wog001,
+        val004     type v_coss_view-wog001,
+        val005     type v_coss_view-wog001,
+        val006     type v_coss_view-wog001,
+        val007     type v_coss_view-wog001,
+        val008     type v_coss_view-wog001,
+        val009     type v_coss_view-wog001,
+        val010     type v_coss_view-wog001,
+        val011     type v_coss_view-wog001,
+        val012     type v_coss_view-wog001,
+        special    type v_coss_view-wog001,
         total      type v_coss_view-wog001,
+        total_cmp  type v_coss_view-wog001,
+        diff_abs   type v_coss_view-wog001,
+        diff_pct   type ty_pct,
         waers      type waers,
         is_formula type abap_bool,
       end of ty_line,
@@ -107,7 +141,8 @@ class y0000co_cl_soi_engine definition
       gc_kokrs          type kokrs             value '2000',
       gc_lednr          type v_coss_view-lednr value '00',
       gc_fallback_langu type sy-langu          value 'E',
-      gc_period_max     type i                 value 16.
+      gc_period_max     type i                 value 16,
+      gc_pct_max        type p length 9 decimals 2 value '9999999.99'.
 
 *---------------------------------------------------------------------*
 * Period / SOI summary structures
@@ -310,7 +345,7 @@ class y0000co_cl_soi_engine definition
 * Instance state (one run)
 *---------------------------------------------------------------------*
 * GV_BUKRS / GV_SOIVAR replace P_BUKRS / P_SOIVAR of the report.
-* GV_PERV / GV_PERB are fixed to 1 / 16 (total mode). GV_ERROR stops
+* GV_PERV / GV_PERB are the period bounds of the run. GV_ERROR stops
 * the run after a blocking customizing or master data error.
 *---------------------------------------------------------------------*
     data:
@@ -418,7 +453,14 @@ class y0000co_cl_soi_engine definition
 
       build_summary_data,
 
-      apply_formula_lines.
+      apply_formula_lines,
+
+      run_pass,
+
+      diff_percent
+        importing iv_base       type v_coss_view-wog001
+                  iv_diff       type v_coss_view-wog001
+        returning value(rv_pct) type ty_pct.
 
 endclass.
 
@@ -427,18 +469,23 @@ class y0000co_cl_soi_engine implementation.
 
   method run.
 *---------------------------------------------------------------------*
-* Run the SOI engine for one context (total mode)
+* Run the SOI engine for one context
 *---------------------------------------------------------------------*
-* Same sequence as RUN / RUN_PASS of Y0000CO_SOI_NEW for pass A in
-* total mode. Authorization is checked first, per convention. Any
-* blocking error stops the run with no lines; GET_MESSAGES says why.
+* Same sequence as RUN of Y0000CO_SOI_NEW: authorization first, then
+* customizing, the SET expansions (once, they do not depend on year,
+* version or value type), pass A and - when requested - pass B with
+* only the value caches reset. Any blocking error stops the run with
+* no lines; GET_MESSAGES says why.
 *---------------------------------------------------------------------*
+
+    data: lt_summary_a type tt_summary,
+          lv_period    type ty_period.
+
+    field-symbols: <lv_src> type any,
+                   <lv_tgt> type any.
 
     gv_bukrs  = is_context-bukrs.
     gv_soivar = is_context-soivar.
-    gv_gjahr  = is_context-gjahr.
-    gv_versn  = is_context-versn.
-    gv_wrttp  = is_context-wrttp.
 
     check_authority( ).
 
@@ -446,10 +493,21 @@ class y0000co_cl_soi_engine implementation.
            gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
            gt_order_totals, gt_totals_cache.
 
-*   Total mode: the full fiscal year including special periods 13-16,
-*   exactly as DETERMINE_PERIOD_BOUNDS does in the report.
-    gv_perv = 1.
-    gv_perb = gc_period_max.
+*---------------------------------------------------------------------*
+* Period bounds for both passes
+*---------------------------------------------------------------------*
+* Blank bounds mean the full year including the special periods, as
+* the report's total mode. The same bounds apply to the comparison
+* pass, which is what P_CMPTO does in the report.
+*---------------------------------------------------------------------*
+    gv_perv = cond #( when is_context-perv is initial then 1 else is_context-perv ).
+    gv_perb = cond #( when is_context-perb is initial then gc_period_max else is_context-perb ).
+
+    if gv_perv < 1 or gv_perb > gc_period_max or gv_perv > gv_perb.
+      add_message( iv_text  = |Periods must be between 1 and { gc_period_max }, and From <= To|
+                   iv_error = abap_true ).
+      return.
+    endif.
 
     validate_company_code( ).
     if gv_error = abap_true.
@@ -473,21 +531,118 @@ class y0000co_cl_soi_engine implementation.
 
     prepare_rule_scopes( ).
 
+*---------------------------------------------------------------------*
+* Pass A - the base data set
+*---------------------------------------------------------------------*
+    gv_gjahr = is_context-gjahr.
+    gv_versn = is_context-versn.
+    gv_wrttp = is_context-wrttp.
+    run_pass( ).
+    lt_summary_a = gt_summary.
+
+*---------------------------------------------------------------------*
+* Pass B - the comparison data set
+*---------------------------------------------------------------------*
+* Only the value caches are reset, as RESET_VALUE_CACHES in the report.
+* After this block GT_SUMMARY holds pass B.
+*---------------------------------------------------------------------*
+    if is_context-compare = abap_true.
+      clear: gt_order_cache, gt_order_totals, gt_totals_cache, gt_summary.
+
+      gv_gjahr = cond #( when is_context-gjahr2 is initial then is_context-gjahr else is_context-gjahr2 ).
+      gv_versn = cond #( when is_context-versn2 is initial then is_context-versn else is_context-versn2 ).
+      gv_wrttp = cond #( when is_context-wrttp2 is initial then is_context-wrttp else is_context-wrttp2 ).
+      run_pass( ).
+    endif.
+
+*---------------------------------------------------------------------*
+* Result lines
+*---------------------------------------------------------------------*
+* Periods outside PERV-PERB stay zero, so the period columns plus the
+* special periods add up to the total. Comparison columns follow
+* BUILD_COMPARISON of the report: B - A, and the percentage over
+* ABS(A) (see DIFF_PERCENT).
+*---------------------------------------------------------------------*
+    loop at lt_summary_a into data(ls_summary).
+      data(ls_line) = value ty_line(
+        soiline    = ls_summary-soiline
+        outline    = ls_summary-outline
+        text       = ls_summary-text
+        special    = ls_summary-val013 + ls_summary-val014
+                   + ls_summary-val015 + ls_summary-val016
+        total      = ls_summary-line_sum
+        waers      = ls_summary-waers
+        is_formula = ls_summary-is_formula ).
+
+      do 12 times.
+        lv_period = sy-index.
+        assign component |VAL{ lv_period }| of structure ls_summary to <lv_src>.
+        assign component |VAL{ lv_period }| of structure ls_line to <lv_tgt>.
+        if <lv_src> is assigned and <lv_tgt> is assigned.
+          <lv_tgt> = <lv_src>.
+        endif.
+        unassign: <lv_src>, <lv_tgt>.
+      enddo.
+
+      if is_context-compare = abap_true.
+        read table gt_summary into data(ls_cmp)
+          with key soiline = ls_summary-soiline.
+        if sy-subrc = 0.
+          ls_line-total_cmp = ls_cmp-line_sum.
+        endif.
+
+        ls_line-diff_abs = ls_line-total_cmp - ls_line-total.
+        ls_line-diff_pct = diff_percent( iv_base = ls_line-total
+                                         iv_diff = ls_line-diff_abs ).
+      endif.
+
+      append ls_line to rt_line.
+    endloop.
+
+  endmethod.
+
+
+  method run_pass.
+*---------------------------------------------------------------------*
+* One data set (GV_GJAHR / GV_VERSN / GV_WRTTP), as RUN_PASS in the
+* report
+*---------------------------------------------------------------------*
     prepare_order_scope( ).
     read_order_totals( ).
 
     build_summary_data( ).
     apply_formula_lines( ).
+  endmethod.
 
-    loop at gt_summary into data(ls_summary).
-      append value #( soiline    = ls_summary-soiline
-                      outline    = ls_summary-outline
-                      text       = ls_summary-text
-                      total      = ls_summary-line_sum
-                      waers      = ls_summary-waers
-                      is_formula = ls_summary-is_formula ) to rt_line.
-    endloop.
 
+  method diff_percent.
+*---------------------------------------------------------------------*
+* The comparison percentage (as DIFF_PERCENT in the report)
+*---------------------------------------------------------------------*
+* - divide by ABS(base), not the signed base: on an income statement
+*   the base is negative on revenue lines, and the signed divisor would
+*   flip the percentage so it contradicted the absolute difference
+* - a zero base has no defined percentage; it stays zero
+* - clamp, so a near-zero base cannot overflow the output field. The
+*   intermediate is deliberately wider than the result.
+*---------------------------------------------------------------------*
+    data lv_pct type p length 15 decimals 2.
+
+    rv_pct = 0.
+
+    if iv_base = 0.
+      return.
+    endif.
+
+    lv_pct = iv_diff / abs( iv_base ) * 100.
+
+    if lv_pct > gc_pct_max.
+      lv_pct = gc_pct_max.
+    elseif lv_pct < gc_pct_max * -1.
+      lv_pct = gc_pct_max * -1.
+    endif.
+
+    rv_pct = lv_pct.
   endmethod.
 
 
@@ -1078,7 +1233,7 @@ class y0000co_cl_soi_engine implementation.
 *---------------------------------------------------------------------*
 * Accumulate a period structure into the SOI summary line
 *---------------------------------------------------------------------*
-* Only the periods GV_PERV to GV_PERB are added (1 to 16 here).
+* Only the periods GV_PERV to GV_PERB are added.
 *---------------------------------------------------------------------*
     data lv_period type ty_period.
 

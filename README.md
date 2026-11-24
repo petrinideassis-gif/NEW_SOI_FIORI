@@ -4,7 +4,7 @@ Fiori Elements preview of the Statement of Income (SOI) report (`Y0000CO_SOI_NEW
 
 Design: [docs/design-note.md](docs/design-note.md).
 
-## Objects in this repository (stage 2, real totals)
+## Objects in this repository (stage 3, selection options)
 
 | Type | Object | File |
 |---|---|---|
@@ -17,7 +17,19 @@ The service binding `Y0000CO_UI_SOI_O4` is created in ADT, not stored here.
 
 No metadata extension: this system does not allow one on a custom entity, so the UI annotations (`@UI.selectionField`, `@UI.lineItem`, `@UI.headerInfo`) are in the custom entity itself.
 
-Stage 2 returns the SOI lines with their real totals in total mode (periods 1-16). The engine is a copy of the engine part of `Y0000CO_SOI_NEW` (COSP/COSS via `V_COSP_VIEW` / `V_COSS_VIEW`); the report itself is unchanged. No comparison, no detail mode, no drill-down yet.
+Stage 3 returns the SOI lines with periods 1-12, the special periods 13-16, the total, and the comparison columns. The engine is a copy of the engine part of `Y0000CO_SOI_NEW` (COSP/COSS via `V_COSP_VIEW` / `V_COSS_VIEW`); the report itself is unchanged. No drill-down yet.
+
+### Old selection screen → Fiori filter bar
+
+| `Y0000CO_SOI_NEW` | Fiori filter | Note |
+|---|---|---|
+| `P_SOIVAR`, `P_GJAHR`, `P_BUKRS`, `P_VERSN`, `P_WRTTP` | SOI Version, Fiscal Year, Company Code, Version, Value Type | Same defaults (`STD`, `000`, `04`) |
+| Total mode (`P_RTOT`) | Period From / Period To left empty | Periods 1-16 |
+| Detail mode (`P_RDET`) with `P_PERV` / `P_PERB` | Period From / Period To | Total is the sum of the range; periods outside stay zero |
+| `P_GJAHR2`, `P_VERSN2`, `P_WRTTP2` | Comparison Fiscal Year / Version / Value Type | One filled field starts the comparison; blank ones fall back to the main field |
+| `P_CMPTO` | Period To | The period range applies to both data sets |
+
+There is no display mode switch: the table always shows total, comparison, periods 01-12 and periods 13-16. In the report, comparison was only allowed in total mode; here it works with any period range.
 
 ## Restore order in ADT (one object at a time, activate before the next)
 
@@ -37,6 +49,8 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 3. Go with year and company code: the SOI lines of version `STD` appear in outline order with their texts
 4. Compare the lines and texts with the classic report `Y0000CO_SOI_NEW` for the same version
 5. Totals match `Y0000CO_SOI_NEW` run in total mode for the same version, company code, year, version and value type, line by line
+6. Detail: Period From 1, Period To 12 → periods 01-12 and the total match the report in detail mode
+7. Comparison: Comparison Version or Fiscal Year filled → Comparison Total, Difference and Difference % match the report in total mode (same values for `P_CMPTO` as Period To)
 
 ## Troubleshooting (met so far)
 
@@ -50,7 +64,7 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 | "Cannot annotate ... type of the annotated entity is not supported" | Metadata extensions are not supported on custom entities in this system | UI annotations directly in the custom entity; no metadata extension |
 | "Unexpected character" in the data definition | Text after the closing `}` or an ABAP-style comment (`*`, `"`) | CDS comments are `//` or `/* */`; nothing after `}` |
 
-## Known limits (stage 2)
+## Known limits
 
 - Engine messages (a SET that could not be expanded, a circular formula, no process orders in the SET) are collected but not shown in Fiori yet; an engine error (unknown company code, company code not in controlling area 2000, no customizing) gives an empty table.
 - The authorization check uses `Y0000CO_FI_AUTHORITY_CHECKS` like the report. Its behaviour on a failed check inside an OData request is not verified yet (it may end the request with an error).
@@ -58,4 +72,4 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
 ## Next stages
 
-Stage 3: show engine messages in Fiori. Then detail mode (periods), comparison, drill-down.
+Stage 4: show engine messages in Fiori. Then drill-down (cost center / order / cost element, formula components, line items).
