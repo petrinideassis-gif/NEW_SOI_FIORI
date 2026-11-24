@@ -10,10 +10,11 @@ Design: [docs/design-note.md](docs/design-note.md).
 |---|---|---|
 | Custom entity | `Y0000CO_C_SOILINE` | `cds/Y0000CO_C_SOILINE.asddls` |
 | Query class | `Y0000CO_CL_SOI_QUERY` | `src/classes/Y0000CO_CL_SOI_QUERY.abap` |
-| Metadata extension | `Y0000CO_C_SOILINE` | `metadata-extensions/Y0000CO_C_SOILINE.asddlxs` |
 | Service definition | `Y0000CO_UI_SOI` | `service/Y0000CO_UI_SOI.srvd` |
 
 The service binding `Y0000CO_UI_SOI_O4` is created in ADT, not stored here.
+
+No metadata extension: this system does not allow one on a custom entity, so the UI annotations (`@UI.selectionField`, `@UI.lineItem`, `@UI.headerInfo`) are in the custom entity itself.
 
 Stage 1 returns the real SOI lines and texts of the selected version with amount zero. It proves the plumbing before the engine is connected.
 
@@ -21,10 +22,9 @@ Stage 1 returns the real SOI lines and texts of the selected version with amount
 
 1. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, any template), Ctrl+A, paste, save, activate. A warning that the class does not exist yet is expected
 2. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
-3. Metadata extension `Y0000CO_C_SOILINE` (same name; right-click the entity → New Metadata Extension), paste, activate
-4. Service definition `Y0000CO_UI_SOI`, paste, activate
-5. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
-6. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
+3. Service definition `Y0000CO_UI_SOI`, paste, activate
+4. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
+5. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
 
 All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
@@ -44,6 +44,8 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 | "Type Y0000CO_C_SOILINE is unknown" in the class | Entity not active yet | Activate the entity, then the class |
 | "Instances of the abstract class CX_RAP_QUERY_PROVIDER cannot be generated" | The class is abstract | Let `CX_RAP_QUERY_FILTER_NO_RANGE` pass through |
 | "You wrote a comment outside a method implementation" | Comment between two methods in the implementation part | Comments only inside `method ... endmethod` |
+| "Unexpected word annotate" in the data definition | Metadata extension source pasted into the data definition | Paste the `.asddls` into the data definition |
+| "Cannot annotate ... type of the annotated entity is not supported" | Metadata extensions are not supported on custom entities in this system | UI annotations directly in the custom entity; no metadata extension |
 | "Unexpected character" in the data definition | Text after the closing `}` or an ABAP-style comment (`*`, `"`) | CDS comments are `//` or `/* */`; nothing after `}` |
 
 ## Next stages
