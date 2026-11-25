@@ -280,6 +280,9 @@ class y0000co_cl_soi_query implementation.
 * the detail page (which reads one row by its key) and the breakdown
 * (which follows the association on those keys) get the same numbers.
 * Warnings arrive as the REMARK of the affected lines.
+* LINECRITICALITY colours formula lines (subtotals / totals) the way
+* the report's colour column did: 2 = orange text for formula lines
+* (yellow rows in the report), 0 = neutral for extraction lines.
 *---------------------------------------------------------------------*
 
     data: lv_period3 type n length 3,
@@ -314,6 +317,7 @@ class y0000co_cl_soi_query implementation.
         soiline           = <ls_line>-soiline
         soilinetext       = <ls_line>-text
         outline           = <ls_line>-outline
+        linecriticality   = cond #( when <ls_line>-is_formula = abap_true then 2 else 0 )
         totalamount       = <ls_line>-total
         compareamount     = <ls_line>-total_cmp
         differenceamount  = <ls_line>-diff_abs

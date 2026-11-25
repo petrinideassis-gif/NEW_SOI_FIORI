@@ -36,6 +36,8 @@ Clicking a SOI line opens its detail page: section **Totals** and section **Brea
 
 Clicking a cost center row of the breakdown opens its detail page with section **Line Items**: the COEP postings (actuals) or COEJ plan rows (exploded per period) for that cost center and cost element over the period range, replacing the report's popup. With a comparison active, the items of both data sets are listed, marked **Base** / **Comparison** in column Data Set. As in the report, order and formula component rows have no line items.
 
+Formula lines (subtotals and totals) are shown with the SOI line and amount columns in orange, the closest Fiori equivalent of the report's coloured rows (Fiori Elements has no row background colour).
+
 There is no display mode switch: the table always shows total, comparison, periods 01-12 and periods 13-16. In the report, comparison was only allowed in total mode; here it works with any period range.
 
 ## Restore order in ADT (one object at a time, activate before the next)

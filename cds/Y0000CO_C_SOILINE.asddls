@@ -58,7 +58,8 @@ define root custom entity Y0000CO_C_SOILINE
       @EndUserText.label: 'Comparison Value Type'
   key CompareValueType : wrttp;
 
-      @UI.lineItem: [{ position: 10, importance: #HIGH }]
+      @UI.lineItem: [{ position: 10, importance: #HIGH,
+                       criticality: 'LineCriticality', criticalityRepresentation: #WITHOUT_ICON }]
       @UI.textArrangement: #TEXT_FIRST
       @ObjectModel.text.element: [ 'SoiLineText' ]
   key SoiLine          : y0000co_soiline;
@@ -69,19 +70,25 @@ define root custom entity Y0000CO_C_SOILINE
       @UI.hidden: true
       Outline          : abap.numc(4);
 
-      @UI.lineItem: [{ position: 20, importance: #HIGH }]
+      @UI.hidden: true
+      LineCriticality  : abap.int1;
+
+      @UI.lineItem: [{ position: 20, importance: #HIGH,
+                       criticality: 'LineCriticality', criticalityRepresentation: #WITHOUT_ICON }]
       @UI.identification: [{ position: 10 }]
       @EndUserText.label: 'Total'
       @Semantics.amount.currencyCode: 'Currency'
       TotalAmount      : abap.curr(15,2);
 
-      @UI.lineItem: [{ position: 30 }]
+      @UI.lineItem: [{ position: 30,
+                       criticality: 'LineCriticality', criticalityRepresentation: #WITHOUT_ICON }]
       @UI.identification: [{ position: 20 }]
       @EndUserText.label: 'Comparison Total'
       @Semantics.amount.currencyCode: 'Currency'
       CompareAmount    : abap.curr(15,2);
 
-      @UI.lineItem: [{ position: 40 }]
+      @UI.lineItem: [{ position: 40,
+                       criticality: 'LineCriticality', criticalityRepresentation: #WITHOUT_ICON }]
       @UI.identification: [{ position: 30 }]
       @EndUserText.label: 'Difference'
       @Semantics.amount.currencyCode: 'Currency'
