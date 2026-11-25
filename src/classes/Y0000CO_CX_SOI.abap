@@ -30,8 +30,10 @@
 *  - Inherits from CX_RAP_QUERY_PROVIDER, the exception declared by
 *    IF_RAP_QUERY_PROVIDER~SELECT (that class is abstract and cannot be
 *    raised itself)
-*  - IF_T100_DYN_MSG allows RAISE EXCEPTION ... MESSAGE ... WITH, so
-*    the text can be passed as message 00/398 (& & & &)
+*  - IF_T100_DYN_MSG and the constructor are inherited from
+*    CX_RAP_QUERY_PROVIDER (declaring the interface again is rejected),
+*    so RAISE EXCEPTION ... MESSAGE ... WITH works without own code;
+*    the text is passed as message 00/398 (& & & &)
 *----------------------------------------------------------------------*
 class y0000co_cx_soi definition
   public
@@ -40,33 +42,10 @@ class y0000co_cx_soi definition
   create public.
 
   public section.
-    interfaces if_t100_dyn_msg.
-
-    methods constructor
-      importing
-        textid   like if_t100_message=>t100key optional
-        previous like previous optional.
 
 endclass.
 
 
 class y0000co_cx_soi implementation.
-
-  method constructor ##ADT_SUPPRESS_GENERATION.
-*---------------------------------------------------------------------*
-* Standard constructor of a T100 exception class
-*---------------------------------------------------------------------*
-* Without a TEXTID the default T100 key is used; RAISE EXCEPTION ...
-* MESSAGE overwrites it with the message given there.
-*---------------------------------------------------------------------*
-    super->constructor( previous = previous ).
-
-    clear me->textid.
-    if textid is initial.
-      if_t100_message~t100key = if_t100_message=>default_textid.
-    else.
-      if_t100_message~t100key = textid.
-    endif.
-  endmethod.
 
 endclass.
