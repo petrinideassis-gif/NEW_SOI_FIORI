@@ -74,6 +74,7 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 | "Instances of the abstract class CX_RAP_QUERY_PROVIDER cannot be generated" | The class is abstract | Let `CX_RAP_QUERY_FILTER_NO_RANGE` pass through |
 | "You wrote a comment outside a method implementation" | Comment between two methods in the implementation part | Comments only inside `method ... endmethod` |
 | "INTERFACES IF_T100_DYN_MSG can only be used once" in `Y0000CO_CX_SOI` | `CX_RAP_QUERY_PROVIDER` already implements it | No interface and no constructor in the subclass; both are inherited |
+| "IS_CONTEXT-WRTTP is not type-compatible with formal parameter IV_WRTTP" | Context typed with data element `WRTTP`, parameter with `V_COSS_VIEW-WRTTP` | Type the parameters like the context (`gjahr`, `versn`, `wrttp`) |
 | "Unexpected word annotate" in the data definition | Metadata extension source pasted into the data definition | Paste the `.asddls` into the data definition |
 | "Cannot annotate ... type of the annotated entity is not supported" | Metadata extensions are not supported on custom entities in this system | UI annotations directly in the custom entity; no metadata extension |
 | "Unexpected character" in the data definition | Text after the closing `}` or an ABAP-style comment (`*`, `"`) | CDS comments are `//` or `/* */`; nothing after `}` |

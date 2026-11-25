@@ -658,9 +658,9 @@ class y0000co_cl_soi_engine definition
       read_line_items
         importing iv_data_set type char1
                   it_objnr    type tt_r_objnr
-                  iv_gjahr    type v_coss_view-gjahr
-                  iv_versn    type v_coss_view-versn
-                  iv_wrttp    type v_coss_view-wrttp
+                  iv_gjahr    type gjahr
+                  iv_versn    type versn
+                  iv_wrttp    type wrttp
                   iv_kstar    type kstar
         changing  ct_items    type tt_line_item,
 
