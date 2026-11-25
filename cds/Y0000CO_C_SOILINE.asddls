@@ -6,6 +6,18 @@
                   description:    { type: #STANDARD, value: 'SoiLineText' } }
 define root custom entity Y0000CO_C_SOILINE
 {
+      @UI.facet: [
+        { id:            'Totals',
+          purpose:       #STANDARD,
+          type:          #IDENTIFICATION_REFERENCE,
+          label:         'Totals',
+          position:      10 },
+        { id:            'Breakdown',
+          purpose:       #STANDARD,
+          type:          #LINEITEM_REFERENCE,
+          label:         'Breakdown',
+          position:      20,
+          targetElement: '_Details' } ]
       @UI.selectionField: [{ position: 10 }]
       @Consumption.filter: { mandatory: true, defaultValue: 'STD' }
   key SoiVersion       : y0000co_soivar;
@@ -58,21 +70,25 @@ define root custom entity Y0000CO_C_SOILINE
       Outline          : abap.numc(4);
 
       @UI.lineItem: [{ position: 20, importance: #HIGH }]
+      @UI.identification: [{ position: 10 }]
       @EndUserText.label: 'Total'
       @Semantics.amount.currencyCode: 'Currency'
       TotalAmount      : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 30 }]
+      @UI.identification: [{ position: 20 }]
       @EndUserText.label: 'Comparison Total'
       @Semantics.amount.currencyCode: 'Currency'
       CompareAmount    : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 40 }]
+      @UI.identification: [{ position: 30 }]
       @EndUserText.label: 'Difference'
       @Semantics.amount.currencyCode: 'Currency'
       DifferenceAmount : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 45 }]
+      @UI.identification: [{ position: 40 }]
       @EndUserText.label: 'Difference %'
       DifferencePercent : abap.dec(9,2);
 
@@ -137,13 +153,28 @@ define root custom entity Y0000CO_C_SOILINE
       Period12         : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 180 }]
+      @UI.identification: [{ position: 50 }]
       @EndUserText.label: 'Periods 13-16'
       @Semantics.amount.currencyCode: 'Currency'
       SpecialPeriods   : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 190 }]
+      @UI.identification: [{ position: 60 }]
       @EndUserText.label: 'Remark'
       Remark           : abap.char(255);
 
       Currency         : waers;
+
+      _Details         : association [0..*] to Y0000CO_C_SOIDET
+                         on  _Details.SoiVersion       = $projection.SoiVersion
+                         and _Details.FiscalYear       = $projection.FiscalYear
+                         and _Details.CompanyCode      = $projection.CompanyCode
+                         and _Details.ValueType        = $projection.ValueType
+                         and _Details.Version          = $projection.Version
+                         and _Details.PeriodFrom       = $projection.PeriodFrom
+                         and _Details.PeriodTo         = $projection.PeriodTo
+                         and _Details.CompareYear      = $projection.CompareYear
+                         and _Details.CompareVersion   = $projection.CompareVersion
+                         and _Details.CompareValueType = $projection.CompareValueType
+                         and _Details.SoiLine          = $projection.SoiLine;
 }

@@ -48,7 +48,9 @@
 *    P_SOIVAR / P_GJAHR / P_VERSN / P_WRTTP come from the run context
 *    (GV_BUKRS / GV_SOIVAR / GV_GJAHR / GV_VERSN / GV_WRTTP); dialog
 *    messages are collected in GT_MESSAGES (GET_MESSAGES) instead of
-*    being sent; no drill-down, no ALV
+*    being sent; no ALV, no line items yet
+*  - Drill-down (GET_DETAILS) reuses the state of the last RUN, as the
+*    report's double-click reuses the state of the report run
 *  - Error that stops the run (wrong period range, unknown company
 *    code, company code not in KOKRS 2000, no customizing, inconsistent
 *    customizing): RUN returns no lines and GET_ERROR says why
@@ -122,6 +124,52 @@ class y0000co_cl_soi_engine definition
 
       tt_line type standard table of ty_line with empty key.
 
+*---------------------------------------------------------------------*
+* Drill-down row (one per cost center/order and cost element, or one
+* per formula component)
+*---------------------------------------------------------------------*
+* ROW_TYPE: 'C' cost center, 'O' process order, 'F' formula component.
+* Same content as the report's drill-down grid (TY_DETAIL_DISP):
+* VALUE is the row's total over the period range (pass A), VALUE_CMP
+* pass B. Formula components are unsigned, as their own SOI line
+* shows them; OPER_TYPE says how they combine.
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_detail,
+        row_type     type c length 1,
+        kostl        type kostl,
+        kosar        type kosar,
+        kosar_txt    type c length 50,
+        fkber        type fkber,
+        fkber_txt    type c length 50,
+        aufnr        type aufnr,
+        kstar        type kstar,
+        kstar_txt    type c length 50,
+        comp_soiline type y0000co_nsoi01-soiline,
+        comp_text    type y0000co_nsoi01t-text,
+        oper_type    type y0000co_nsoi03-oper_type,
+        val001       type v_coss_view-wog001,
+        val002       type v_coss_view-wog001,
+        val003       type v_coss_view-wog001,
+        val004       type v_coss_view-wog001,
+        val005       type v_coss_view-wog001,
+        val006       type v_coss_view-wog001,
+        val007       type v_coss_view-wog001,
+        val008       type v_coss_view-wog001,
+        val009       type v_coss_view-wog001,
+        val010       type v_coss_view-wog001,
+        val011       type v_coss_view-wog001,
+        val012       type v_coss_view-wog001,
+        special      type v_coss_view-wog001,
+        value        type v_coss_view-wog001,
+        value_cmp    type v_coss_view-wog001,
+        diff_abs     type v_coss_view-wog001,
+        diff_pct     type ty_pct,
+        waers        type waers,
+      end of ty_detail,
+
+      tt_detail type standard table of ty_detail with empty key.
+
     methods:
       run
         importing is_context    type ty_context
@@ -131,7 +179,14 @@ class y0000co_cl_soi_engine definition
         returning value(rt_messages) type string_table,
 
       get_error
-        returning value(rv_error) type string.
+        returning value(rv_error) type string,
+
+      get_details
+        importing iv_soiline       type y0000co_nsoi01-soiline
+        returning value(rt_detail) type tt_detail,
+
+      get_lines
+        returning value(rt_line) type tt_line.
 
   private section.
 
@@ -348,6 +403,39 @@ class y0000co_cl_soi_engine definition
       with unique key method kokrs bukrs ksgru kagru.
 
 *---------------------------------------------------------------------*
+* Drill-down build table (as TY_DETAIL_OBJECT in the report)
+*---------------------------------------------------------------------*
+* Sorted by cost center, order and cost element, so MERGE_DETAIL_OBJECT
+* can upsert. KOSTL and AUFNR are mutually exclusive per row.
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_detail_object,
+        kostl     type kostl,
+        aufnr     type aufnr,
+        kstar     type kstar,
+        val001    type v_coss_view-wog001,
+        val002    type v_coss_view-wog001,
+        val003    type v_coss_view-wog001,
+        val004    type v_coss_view-wog001,
+        val005    type v_coss_view-wog001,
+        val006    type v_coss_view-wog001,
+        val007    type v_coss_view-wog001,
+        val008    type v_coss_view-wog001,
+        val009    type v_coss_view-wog001,
+        val010    type v_coss_view-wog001,
+        val011    type v_coss_view-wog001,
+        val012    type v_coss_view-wog001,
+        val013    type v_coss_view-wog001,
+        val014    type v_coss_view-wog001,
+        val015    type v_coss_view-wog001,
+        val016    type v_coss_view-wog001,
+        value     type v_coss_view-wog001,
+        value_cmp type v_coss_view-wog001,
+      end of ty_detail_object,
+      tt_detail_object type sorted table of ty_detail_object
+        with unique key kostl aufnr kstar.
+
+*---------------------------------------------------------------------*
 * Warnings per object, for the remark column
 *---------------------------------------------------------------------*
 * A SET group that could not be expanded (KIND 'C' cost center group,
@@ -384,6 +472,13 @@ class y0000co_cl_soi_engine definition
       gt_failed_group type tt_failed_group,
       gt_order_sets_missing type string_table,
       gt_formula_skipped type sorted table of y0000co_nsoi01-soiline with unique key table_line,
+      gv_compare      type abap_bool,
+      gv_gjahr_a      type v_coss_view-gjahr,
+      gv_versn_a      type v_coss_view-versn,
+      gv_wrttp_a      type v_coss_view-wrttp,
+      gt_summary_a    type tt_summary,
+      gt_order_totals_a type tt_order_total_row,
+      gt_lines        type tt_line,
       gt_soi01        type tt_soi01,
       gt_rule         type tt_rule,
       gt_formula      type tt_formula,
@@ -486,6 +581,41 @@ class y0000co_cl_soi_engine definition
         importing iv_soiline      type y0000co_nsoi01-soiline
         returning value(rv_remark) type string,
 
+      collect_order_detail
+        importing it_order_totals type tt_order_total_row
+                  it_kstar        type tt_r_kstar
+                  iv_pass         type char1
+        changing  ct_detail       type tt_detail_object,
+
+      collect_cc_detail
+        importing iv_gjahr  type v_coss_view-gjahr
+                  iv_versn  type v_coss_view-versn
+                  iv_wrttp  type v_coss_view-wrttp
+                  it_objnr  type tt_obj_scope
+                  it_kstar  type tt_r_kstar
+                  iv_pass   type char1
+        changing  ct_detail type tt_detail_object,
+
+      merge_detail_object
+        importing iv_kostl   type kostl
+                  iv_aufnr   type aufnr
+                  iv_kstar   type kstar
+                  is_periods type ty_period_sum
+                  iv_pass    type char1
+        changing  ct_detail  type tt_detail_object,
+
+      decode_objnr
+        importing iv_objnr type j_objnr
+        exporting ev_kostl type kostl
+                  ev_aufnr type aufnr,
+
+      sum_periods_in_range
+        importing is_periods    type ty_period_sum
+        returning value(rv_sum) type v_coss_view-wog001,
+
+      enrich_detail_texts
+        changing ct_detail type tt_detail,
+
       diff_percent
         importing iv_base       type v_coss_view-wog001
                   iv_diff       type v_coss_view-wog001
@@ -507,8 +637,7 @@ class y0000co_cl_soi_engine implementation.
 * no lines; GET_MESSAGES says why.
 *---------------------------------------------------------------------*
 
-    data: lt_summary_a type tt_summary,
-          lv_period    type ty_period.
+    data: lv_period type ty_period.
 
     field-symbols: <lv_src> type any,
                    <lv_tgt> type any.
@@ -520,6 +649,7 @@ class y0000co_cl_soi_engine implementation.
 
     clear: gv_error, gv_error_text, gt_messages, gt_failed_group,
            gt_order_sets_missing, gt_formula_skipped,
+           gt_summary_a, gt_order_totals_a, gt_lines,
            gt_soi01, gt_rule, gt_formula,
            gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
            gt_order_totals, gt_totals_cache.
@@ -569,7 +699,15 @@ class y0000co_cl_soi_engine implementation.
     gv_versn = is_context-versn.
     gv_wrttp = is_context-wrttp.
     run_pass( ).
-    lt_summary_a = gt_summary.
+
+*   Pass A is kept for the drill-down (GET_DETAILS), as the report
+*   snapshots it unconditionally in RUN.
+    gv_compare        = is_context-compare.
+    gv_gjahr_a        = gv_gjahr.
+    gv_versn_a        = gv_versn.
+    gv_wrttp_a        = gv_wrttp.
+    gt_summary_a      = gt_summary.
+    gt_order_totals_a = gt_order_totals.
 
 *---------------------------------------------------------------------*
 * Pass B - the comparison data set
@@ -594,7 +732,7 @@ class y0000co_cl_soi_engine implementation.
 * BUILD_COMPARISON of the report: B - A, and the percentage over
 * ABS(A) (see DIFF_PERCENT).
 *---------------------------------------------------------------------*
-    loop at lt_summary_a into data(ls_summary).
+    loop at gt_summary_a into data(ls_summary).
       data(ls_line) = value ty_line(
         soiline    = ls_summary-soiline
         outline    = ls_summary-outline
@@ -630,6 +768,8 @@ class y0000co_cl_soi_engine implementation.
 
       append ls_line to rt_line.
     endloop.
+
+    gt_lines = rt_line.
 
   endmethod.
 
@@ -686,11 +826,532 @@ class y0000co_cl_soi_engine implementation.
   endmethod.
 
 
+  method get_lines.
+*---------------------------------------------------------------------*
+* Result lines of the last run (same as RUN returned)
+*---------------------------------------------------------------------*
+    rt_line = gt_lines.
+  endmethod.
+
+
   method get_error.
 *---------------------------------------------------------------------*
 * First blocking error of the last run (initial if the run completed)
 *---------------------------------------------------------------------*
     rv_error = gv_error_text.
+  endmethod.
+
+  method get_details.
+*---------------------------------------------------------------------*
+* Drill-down for one SOI line (call after RUN)
+*---------------------------------------------------------------------*
+* Same logic as BUILD_DETAIL_FOR_ROW / BUILD_DETAIL_OBJECT /
+* BUILD_DETAIL_FORMULA in the report:
+* - formula line: one row per Y0000CO_NSOI03 component, from memory
+* - extraction line: METHOD A rows from the order totals already read
+*   (no new query), METHOD C rows from one small SELECT per rule scoped
+*   to the rule's cached OBJNR/KSTAR ranges. Pass B only when comparing.
+* Each row's VALUE is its total over the period range, so the rows add
+* up to the SOI line's total.
+*---------------------------------------------------------------------*
+    data: lt_kstar  type tt_r_kstar,
+          lt_objnr  type tt_obj_scope,
+          lt_object type tt_detail_object,
+          lv_period type ty_period.
+
+    field-symbols: <lv_src> type any,
+                   <lv_tgt> type any.
+
+    read table gt_summary_a into data(ls_line) with key soiline = iv_soiline.
+    if sy-subrc <> 0.
+      return.
+    endif.
+
+*---------------------------------------------------------------------*
+* Formula line: components
+*---------------------------------------------------------------------*
+* GT_SUMMARY_A holds pass A, GT_SUMMARY pass B (when comparing); every
+* component already has its final total because APPLY_FORMULA_LINES
+* resolved all formulas in dependency order.
+*---------------------------------------------------------------------*
+    if ls_line-is_formula = abap_true.
+      loop at gt_formula into data(ls_formula) where soiline = iv_soiline.
+        data(ls_row) = value ty_detail( row_type     = 'F'
+                                        comp_soiline = ls_formula-comp_soiline
+                                        oper_type    = ls_formula-oper_type
+                                        waers        = gv_waers ).
+
+        read table gt_summary_a into data(ls_comp) with key soiline = ls_formula-comp_soiline.
+        if sy-subrc = 0.
+          ls_row-comp_text = ls_comp-text.
+          ls_row-value     = ls_comp-line_sum.
+          ls_row-special   = ls_comp-val013 + ls_comp-val014 + ls_comp-val015 + ls_comp-val016.
+          do 12 times.
+            lv_period = sy-index.
+            assign component |VAL{ lv_period }| of structure ls_comp to <lv_src>.
+            assign component |VAL{ lv_period }| of structure ls_row to <lv_tgt>.
+            if <lv_src> is assigned and <lv_tgt> is assigned.
+              <lv_tgt> = <lv_src>.
+            endif.
+            unassign: <lv_src>, <lv_tgt>.
+          enddo.
+        endif.
+
+        if gv_compare = abap_true.
+          read table gt_summary into data(ls_comp_b) with key soiline = ls_formula-comp_soiline.
+          if sy-subrc = 0.
+            ls_row-value_cmp = ls_comp_b-line_sum.
+          endif.
+        endif.
+
+        append ls_row to rt_detail.
+      endloop.
+
+    else.
+*---------------------------------------------------------------------*
+* Extraction line: cost center / order / cost element rows
+*---------------------------------------------------------------------*
+      loop at gt_rule into data(ls_rule) where soiline = iv_soiline and method <> 'R'.
+        clear lt_kstar.
+        get_cached_kstar(
+          exporting iv_kokrs = ls_rule-kokrs
+                    iv_kagru = ls_rule-kagru
+          changing  ct_kstar = lt_kstar ).
+
+        if ls_rule-method = 'A'.
+          collect_order_detail(
+            exporting it_order_totals = gt_order_totals_a
+                      it_kstar        = lt_kstar
+                      iv_pass         = 'A'
+            changing  ct_detail       = lt_object ).
+
+          if gv_compare = abap_true.
+            collect_order_detail(
+              exporting it_order_totals = gt_order_totals
+                        it_kstar        = lt_kstar
+                        iv_pass         = 'B'
+              changing  ct_detail       = lt_object ).
+          endif.
+
+        else.
+          clear lt_objnr.
+          get_cached_objnr(
+            exporting iv_kokrs = ls_rule-kokrs
+                      iv_bukrs = gv_bukrs
+                      iv_ksgru = ls_rule-ksgru
+            changing  ct_objnr = lt_objnr ).
+
+          collect_cc_detail(
+            exporting iv_gjahr  = gv_gjahr_a
+                      iv_versn  = gv_versn_a
+                      iv_wrttp  = gv_wrttp_a
+                      it_objnr  = lt_objnr
+                      it_kstar  = lt_kstar
+                      iv_pass   = 'A'
+            changing  ct_detail = lt_object ).
+
+          if gv_compare = abap_true.
+            collect_cc_detail(
+              exporting iv_gjahr  = gv_gjahr
+                        iv_versn  = gv_versn
+                        iv_wrttp  = gv_wrttp
+                        it_objnr  = lt_objnr
+                        it_kstar  = lt_kstar
+                        iv_pass   = 'B'
+              changing  ct_detail = lt_object ).
+          endif.
+        endif.
+      endloop.
+
+      loop at lt_object into data(ls_object).
+        data(ls_obj_row) = value ty_detail(
+          row_type  = cond #( when ls_object-aufnr is not initial then 'O' else 'C' )
+          kostl     = ls_object-kostl
+          aufnr     = ls_object-aufnr
+          kstar     = ls_object-kstar
+          special   = ls_object-val013 + ls_object-val014 + ls_object-val015 + ls_object-val016
+          value     = ls_object-value
+          value_cmp = ls_object-value_cmp
+          waers     = gv_waers ).
+        do 12 times.
+          lv_period = sy-index.
+          assign component |VAL{ lv_period }| of structure ls_object to <lv_src>.
+          assign component |VAL{ lv_period }| of structure ls_obj_row to <lv_tgt>.
+          if <lv_src> is assigned and <lv_tgt> is assigned.
+            <lv_tgt> = <lv_src>.
+          endif.
+          unassign: <lv_src>, <lv_tgt>.
+        enddo.
+        append ls_obj_row to rt_detail.
+      endloop.
+
+      enrich_detail_texts( changing ct_detail = rt_detail ).
+    endif.
+
+*---------------------------------------------------------------------*
+* Comparison columns (as COMPUTE_DETAIL_DIFFS in the report)
+*---------------------------------------------------------------------*
+    if gv_compare = abap_true.
+      loop at rt_detail assigning field-symbol(<ls_detail>).
+        <ls_detail>-diff_abs = <ls_detail>-value_cmp - <ls_detail>-value.
+        <ls_detail>-diff_pct = diff_percent( iv_base = <ls_detail>-value
+                                             iv_diff = <ls_detail>-diff_abs ).
+      endloop.
+    endif.
+  endmethod.
+
+
+  method collect_order_detail.
+*---------------------------------------------------------------------*
+* METHOD A object/cost-element rows - already in memory
+*---------------------------------------------------------------------*
+    data: ls_periods type ty_period_sum,
+          lv_kostl   type kostl,
+          lv_aufnr   type aufnr.
+
+    loop at it_order_totals into data(ls_row) where kstar in it_kstar.
+      decode_objnr(
+        exporting iv_objnr = ls_row-objnr
+        importing ev_kostl = lv_kostl
+                  ev_aufnr = lv_aufnr ).
+
+      periods_from_wog( exporting iv_source = ls_row changing cs_periods = ls_periods ).
+
+      merge_detail_object(
+        exporting iv_kostl   = lv_kostl
+                  iv_aufnr   = lv_aufnr
+                  iv_kstar   = ls_row-kstar
+                  is_periods = ls_periods
+                  iv_pass    = iv_pass
+        changing  ct_detail  = ct_detail ).
+    endloop.
+  endmethod.
+
+
+  method collect_cc_detail.
+*---------------------------------------------------------------------*
+* METHOD C object/cost-element rows - one small scoped query
+*---------------------------------------------------------------------*
+* Same query shape as SELECT_TOTALS_FOR_RULE, scoped to this one rule's
+* cached OBJNR/KSTAR ranges, but keeping OBJNR/KSTAR instead of
+* collapsing straight into a total.
+*---------------------------------------------------------------------*
+    data: lt_r_objnr type tt_r_objnr,
+          ls_periods type ty_period_sum,
+          lv_kostl   type kostl,
+          lv_aufnr   type aufnr.
+
+    field-symbols <ls_objnr_range> like line of lt_r_objnr.
+
+    if it_objnr is initial or it_kstar is initial.
+      return.
+    endif.
+
+    loop at it_objnr into data(ls_objnr).
+      append initial line to lt_r_objnr assigning <ls_objnr_range>.
+
+      <ls_objnr_range>-sign = 'I'.
+
+      case ls_objnr-objnr(2).
+        when 'KL'.
+          <ls_objnr_range>-option = 'CP'.
+        when others.
+          <ls_objnr_range>-option = 'EQ'.
+      endcase.
+
+      <ls_objnr_range>-low = ls_objnr-objnr.
+    endloop.
+
+    if lt_r_objnr is initial.
+      return.
+    endif.
+
+    select objnr, kstar,
+           wog001, wog002, wog003, wog004,
+           wog005, wog006, wog007, wog008,
+           wog009, wog010, wog011, wog012,
+           wog013, wog014, wog015, wog016
+      from v_coss_view
+      where lednr = @gc_lednr
+        and gjahr = @iv_gjahr
+        and wrttp = @iv_wrttp
+        and versn = @iv_versn
+        and kstar in @it_kstar
+        and objnr in @lt_r_objnr
+        and (
+             wog001 <> 0 or wog002 <> 0 or
+             wog003 <> 0 or wog004 <> 0 or
+             wog005 <> 0 or wog006 <> 0 or
+             wog007 <> 0 or wog008 <> 0 or
+             wog009 <> 0 or wog010 <> 0 or
+             wog011 <> 0 or wog012 <> 0 or
+             wog013 <> 0 or wog014 <> 0 or
+             wog015 <> 0 or wog016 <> 0
+        )
+      into table @data(lt_coss).
+
+    loop at lt_coss into data(ls_coss).
+      decode_objnr(
+        exporting iv_objnr = ls_coss-objnr
+        importing ev_kostl = lv_kostl
+                  ev_aufnr = lv_aufnr ).
+      periods_from_wog( exporting iv_source = ls_coss changing cs_periods = ls_periods ).
+      merge_detail_object(
+        exporting iv_kostl   = lv_kostl
+                  iv_aufnr   = lv_aufnr
+                  iv_kstar   = ls_coss-kstar
+                  is_periods = ls_periods
+                  iv_pass    = iv_pass
+        changing  ct_detail  = ct_detail ).
+    endloop.
+
+    select objnr, kstar,
+           wog001, wog002, wog003, wog004,
+           wog005, wog006, wog007, wog008,
+           wog009, wog010, wog011, wog012,
+           wog013, wog014, wog015, wog016
+      from v_cosp_view
+      where lednr = @gc_lednr
+        and gjahr = @iv_gjahr
+        and wrttp = @iv_wrttp
+        and versn = @iv_versn
+        and kstar in @it_kstar
+        and objnr in @lt_r_objnr
+        and (
+             wog001 <> 0 or wog002 <> 0 or
+             wog003 <> 0 or wog004 <> 0 or
+             wog005 <> 0 or wog006 <> 0 or
+             wog007 <> 0 or wog008 <> 0 or
+             wog009 <> 0 or wog010 <> 0 or
+             wog011 <> 0 or wog012 <> 0 or
+             wog013 <> 0 or wog014 <> 0 or
+             wog015 <> 0 or wog016 <> 0
+        )
+      into table @data(lt_cosp).
+
+    loop at lt_cosp into data(ls_cosp).
+      decode_objnr(
+        exporting iv_objnr = ls_cosp-objnr
+        importing ev_kostl = lv_kostl
+                  ev_aufnr = lv_aufnr ).
+      periods_from_wog( exporting iv_source = ls_cosp changing cs_periods = ls_periods ).
+      merge_detail_object(
+        exporting iv_kostl   = lv_kostl
+                  iv_aufnr   = lv_aufnr
+                  iv_kstar   = ls_cosp-kstar
+                  is_periods = ls_periods
+                  iv_pass    = iv_pass
+        changing  ct_detail  = ct_detail ).
+    endloop.
+  endmethod.
+
+
+  method merge_detail_object.
+*---------------------------------------------------------------------*
+* Upsert one (cost center/order, cost element) row into the breakdown
+*---------------------------------------------------------------------*
+* Period columns are accumulated for pass A only. They are written
+* component by component: <LS_DETAIL> points into a sorted table whose
+* key fields are write-protected, so the whole row cannot be passed to
+* a CHANGING parameter (see the report).
+*---------------------------------------------------------------------*
+    data lv_period type ty_period.
+
+    field-symbols: <lv_add> type any,
+                   <lv_tot> type any.
+
+    read table ct_detail assigning field-symbol(<ls_detail>)
+      with table key kostl = iv_kostl aufnr = iv_aufnr kstar = iv_kstar.
+
+    if sy-subrc <> 0.
+      insert value ty_detail_object(
+        kostl = iv_kostl
+        aufnr = iv_aufnr
+        kstar = iv_kstar ) into table ct_detail
+        assigning <ls_detail>.
+    endif.
+
+    if iv_pass <> 'A'.
+      <ls_detail>-value_cmp = <ls_detail>-value_cmp + sum_periods_in_range( is_periods ).
+      return.
+    endif.
+
+    <ls_detail>-value = <ls_detail>-value + sum_periods_in_range( is_periods ).
+
+    do gv_perb times.
+      if sy-index < gv_perv.
+        continue.
+      endif.
+
+      lv_period = sy-index.
+
+      assign component |VAL{ lv_period }| of structure is_periods to <lv_add>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      assign component |VAL{ lv_period }| of structure <ls_detail> to <lv_tot>.
+      if sy-subrc <> 0.
+        continue.
+      endif.
+
+      <lv_tot> = <lv_tot> + <lv_add>.
+    enddo.
+  endmethod.
+
+
+  method decode_objnr.
+*---------------------------------------------------------------------*
+* Decode a CO object number into a cost center or an order number
+*---------------------------------------------------------------------*
+* Mirrors, in reverse, how the OBJNR strings are built
+* (BUILD_OBJNR_FROM_COSTCENTERS: 'KS'/'KL' + GC_KOKRS + KOSTL;
+* PREPARE_ORDER_SCOPE: 'OR' + the SETLEAF order number).
+*---------------------------------------------------------------------*
+    data(lv_koffset) = 2 + strlen( gc_kokrs ).
+
+    clear: ev_kostl, ev_aufnr.
+
+    case iv_objnr(2).
+      when 'KS' or 'KL'.
+        ev_kostl = iv_objnr+lv_koffset.
+      when 'OR'.
+        ev_aufnr = iv_objnr+2.
+    endcase.
+  endmethod.
+
+
+  method sum_periods_in_range.
+*---------------------------------------------------------------------*
+* Sum a period structure over the active period range
+*---------------------------------------------------------------------*
+    data lv_period type ty_period.
+
+    field-symbols <lv_val> type any.
+
+    rv_sum = 0.
+
+    do gv_perb times.
+      if sy-index < gv_perv.
+        continue.
+      endif.
+
+      lv_period = sy-index.
+
+      assign component |VAL{ lv_period }| of structure is_periods to <lv_val>.
+      if sy-subrc = 0.
+        rv_sum = rv_sum + <lv_val>.
+      endif.
+    enddo.
+  endmethod.
+
+
+  method enrich_detail_texts.
+*---------------------------------------------------------------------*
+* Add cost center and cost element master data to the breakdown
+*---------------------------------------------------------------------*
+* As ENRICH_DETAIL_TEXTS in the report: cost center category and
+* functional area from CSKS (column FUNC_AREA), their texts from TKT05
+* and TFKBT, the cost element text from CSKU (CSKA has no text). CSKS
+* is time-dependent and not filtered on validity, so the most recent
+* record per cost center wins (ORDER BY DATBI DESCENDING). Texts prefer
+* the logon language and fall back to GC_FALLBACK_LANGU.
+*---------------------------------------------------------------------*
+    data: lr_kostl type range of kostl,
+          lr_kstar type range of kstar,
+          lv_ktopl type ktopl.
+
+    loop at ct_detail into data(ls_scan).
+      if ls_scan-kostl is not initial.
+        append value #( sign = 'I' option = 'EQ' low = ls_scan-kostl ) to lr_kostl.
+      endif.
+      if ls_scan-kstar is not initial.
+        append value #( sign = 'I' option = 'EQ' low = ls_scan-kstar ) to lr_kstar.
+      endif.
+    endloop.
+
+    sort lr_kostl. delete adjacent duplicates from lr_kostl comparing all fields.
+    sort lr_kstar. delete adjacent duplicates from lr_kstar comparing all fields.
+
+    if lr_kostl is initial and lr_kstar is initial.
+      return.
+    endif.
+
+    if lr_kostl is not initial.
+      select kostl, kosar, func_area as fkber
+        from csks
+        where kokrs = @gc_kokrs
+          and kostl in @lr_kostl
+        order by kostl, datbi descending
+        into table @data(lt_csks).
+    endif.
+
+    select kosar, ktext
+      from tkt05
+      into table @data(lt_kosar_txt).
+
+    select fkber, spras, fkbtx
+      from tfkbt
+      where spras in ( @sy-langu, @gc_fallback_langu )
+      into table @data(lt_fkber_txt).
+
+    if lr_kstar is not initial.
+      select single ktopl
+        from tka01
+        where kokrs = @gc_kokrs
+        into @lv_ktopl.
+
+      if sy-subrc = 0 and lv_ktopl is not initial.
+        select kstar, spras, ktext
+          from csku
+          where ktopl = @lv_ktopl
+            and kstar in @lr_kstar
+            and spras in ( @sy-langu, @gc_fallback_langu )
+          into table @data(lt_kstar_txt).
+      endif.
+    endif.
+
+    loop at ct_detail assigning field-symbol(<ls_row>).
+      if <ls_row>-kostl is not initial.
+        read table lt_csks into data(ls_csks) with key kostl = <ls_row>-kostl.
+        if sy-subrc = 0.
+          <ls_row>-kosar = ls_csks-kosar.
+          <ls_row>-fkber = ls_csks-fkber.
+        endif.
+      endif.
+
+      if <ls_row>-kosar is not initial.
+        read table lt_kosar_txt into data(ls_kosar_txt)
+          with key kosar = <ls_row>-kosar.
+        if sy-subrc = 0.
+          <ls_row>-kosar_txt = ls_kosar_txt-ktext.
+        endif.
+      endif.
+
+      if <ls_row>-fkber is not initial.
+        read table lt_fkber_txt into data(ls_fkber_txt)
+          with key fkber = <ls_row>-fkber spras = sy-langu.
+        if sy-subrc <> 0.
+          read table lt_fkber_txt into ls_fkber_txt
+            with key fkber = <ls_row>-fkber spras = gc_fallback_langu.
+        endif.
+        if sy-subrc = 0.
+          <ls_row>-fkber_txt = ls_fkber_txt-fkbtx.
+        endif.
+      endif.
+
+      if <ls_row>-kstar is not initial.
+        read table lt_kstar_txt into data(ls_kstar_txt)
+          with key kstar = <ls_row>-kstar spras = sy-langu.
+        if sy-subrc <> 0.
+          read table lt_kstar_txt into ls_kstar_txt
+            with key kstar = <ls_row>-kstar spras = gc_fallback_langu.
+        endif.
+        if sy-subrc = 0.
+          <ls_row>-kstar_txt = ls_kstar_txt-ktext.
+        endif.
+      endif.
+    endloop.
   endmethod.
 
 
