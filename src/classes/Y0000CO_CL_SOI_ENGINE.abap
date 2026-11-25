@@ -48,7 +48,9 @@
 *    P_SOIVAR / P_GJAHR / P_VERSN / P_WRTTP come from the run context
 *    (GV_BUKRS / GV_SOIVAR / GV_GJAHR / GV_VERSN / GV_WRTTP); dialog
 *    messages are collected in GT_MESSAGES (GET_MESSAGES) instead of
-*    being sent; no ALV, no line items yet
+*    being sent; no ALV
+*  - Line items (GET_LINE_ITEMS) need only the checks of START_RUN,
+*    not the full SOI run
 *  - Drill-down (GET_DETAILS) reuses the state of the last RUN, as the
 *    report's double-click reuses the state of the report run
 *  - Error that stops the run (wrong period range, unknown company
@@ -170,6 +172,34 @@ class y0000co_cl_soi_engine definition
 
       tt_detail type standard table of ty_detail with empty key.
 
+*---------------------------------------------------------------------*
+* Line item behind a breakdown row (as TY_LINE_ITEM in the report)
+*---------------------------------------------------------------------*
+* DATA_SET: 'A' base data set, 'B' comparison data set. COEP rows are
+* postings; COEJ (plan) rows are exploded to one row per period.
+*---------------------------------------------------------------------*
+    types:
+      begin of ty_line_item,
+        data_set type c length 1,
+        belnr    type coep-belnr,
+        buzei    type coep-buzei,
+        perio    type coep-perio,
+        objnr    type coep-objnr,
+        kostl    type kostl,
+        kstar    type coep-kstar,
+        gjahr    type coep-gjahr,
+        versn    type coep-versn,
+        wogbtr   type coep-wogbtr,
+        waers    type waers,
+        bldat    type cobk-bldat,
+        budat    type cobk-budat,
+        cpudt    type cobk-cpudt,
+        usnam    type cobk-usnam,
+        bltxt    type cobk-bltxt,
+      end of ty_line_item,
+
+      tt_line_item type standard table of ty_line_item with empty key.
+
     methods:
       run
         importing is_context    type ty_context
@@ -186,7 +216,13 @@ class y0000co_cl_soi_engine definition
         returning value(rt_detail) type tt_detail,
 
       get_lines
-        returning value(rt_line) type tt_line.
+        returning value(rt_line) type tt_line,
+
+      get_line_items
+        importing is_context    type ty_context
+                  iv_kostl      type kostl
+                  iv_kstar      type kstar
+        returning value(rt_item) type tt_line_item.
 
   private section.
 
@@ -616,6 +652,18 @@ class y0000co_cl_soi_engine definition
       enrich_detail_texts
         changing ct_detail type tt_detail,
 
+      start_run
+        importing is_context type ty_context,
+
+      read_line_items
+        importing iv_data_set type char1
+                  it_objnr    type tt_r_objnr
+                  iv_gjahr    type v_coss_view-gjahr
+                  iv_versn    type v_coss_view-versn
+                  iv_wrttp    type v_coss_view-wrttp
+                  iv_kstar    type kstar
+        changing  ct_items    type tt_line_item,
+
       diff_percent
         importing iv_base       type v_coss_view-wog001
                   iv_diff       type v_coss_view-wog001
@@ -642,40 +690,7 @@ class y0000co_cl_soi_engine implementation.
     field-symbols: <lv_src> type any,
                    <lv_tgt> type any.
 
-    gv_bukrs  = is_context-bukrs.
-    gv_soivar = is_context-soivar.
-
-    check_authority( ).
-
-    clear: gv_error, gv_error_text, gt_messages, gt_failed_group,
-           gt_order_sets_missing, gt_formula_skipped,
-           gt_summary_a, gt_order_totals_a, gt_lines,
-           gt_soi01, gt_rule, gt_formula,
-           gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
-           gt_order_totals, gt_totals_cache.
-
-*---------------------------------------------------------------------*
-* Period bounds for both passes
-*---------------------------------------------------------------------*
-* Blank bounds mean the full year including the special periods, as
-* the report's total mode. The same bounds apply to the comparison
-* pass, which is what P_CMPTO does in the report.
-*---------------------------------------------------------------------*
-    gv_perv = cond #( when is_context-perv is initial then 1 else is_context-perv ).
-    gv_perb = cond #( when is_context-perb is initial then gc_period_max else is_context-perb ).
-
-    if gv_perv < 1 or gv_perb > gc_period_max or gv_perv > gv_perb.
-      add_message( iv_text  = |Periods must be between 1 and { gc_period_max }, and From <= To|
-                   iv_error = abap_true ).
-      return.
-    endif.
-
-    validate_company_code( ).
-    if gv_error = abap_true.
-      return.
-    endif.
-
-    read_currency( ).
+    start_run( is_context ).
     if gv_error = abap_true.
       return.
     endif.
@@ -702,7 +717,6 @@ class y0000co_cl_soi_engine implementation.
 
 *   Pass A is kept for the drill-down (GET_DETAILS), as the report
 *   snapshots it unconditionally in RUN.
-    gv_compare        = is_context-compare.
     gv_gjahr_a        = gv_gjahr.
     gv_versn_a        = gv_versn.
     gv_wrttp_a        = gv_wrttp.
@@ -771,6 +785,199 @@ class y0000co_cl_soi_engine implementation.
 
     gt_lines = rt_line.
 
+  endmethod.
+
+  method start_run.
+*---------------------------------------------------------------------*
+* Common start of RUN and GET_LINE_ITEMS
+*---------------------------------------------------------------------*
+* Authorization first (convention), then the period bounds, company
+* code and currency checks. Blank bounds mean the full year including
+* the special periods, as the report's total mode; the same bounds
+* apply to the comparison pass, which is what P_CMPTO does in the
+* report. A blocking error sets GV_ERROR.
+*---------------------------------------------------------------------*
+
+    gv_bukrs  = is_context-bukrs.
+    gv_soivar = is_context-soivar.
+
+    check_authority( ).
+
+    clear: gv_error, gv_error_text, gt_messages, gt_failed_group,
+           gt_order_sets_missing, gt_formula_skipped,
+           gt_summary_a, gt_order_totals_a, gt_lines,
+           gt_soi01, gt_rule, gt_formula,
+           gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
+           gt_order_totals, gt_totals_cache.
+
+    gv_compare = is_context-compare.
+
+    gv_perv = cond #( when is_context-perv is initial then 1 else is_context-perv ).
+    gv_perb = cond #( when is_context-perb is initial then gc_period_max else is_context-perb ).
+
+    if gv_perv < 1 or gv_perb > gc_period_max or gv_perv > gv_perb.
+      add_message( iv_text  = |Periods must be between 1 and { gc_period_max }, and From <= To|
+                   iv_error = abap_true ).
+      return.
+    endif.
+
+    validate_company_code( ).
+    if gv_error = abap_true.
+      return.
+    endif.
+
+    read_currency( ).
+  endmethod.
+
+
+  method get_line_items.
+*---------------------------------------------------------------------*
+* Line items behind one breakdown row (cost center + cost element)
+*---------------------------------------------------------------------*
+* As SHOW_LINE_ITEMS in the report, without the full SOI run: only the
+* checks of START_RUN are needed. The object scope matches the KS
+* object exactly and the KL objects by pattern, the same pairing as
+* SELECT_TOTALS_FOR_RULE, so the items add up to the breakdown row.
+* Actuals (WRTTP 04) come from COEP, everything else from COEJ. The
+* report showed one data set per double-click (the clicked column);
+* here the base data set ('A') and, when comparing, the comparison
+* data set ('B') are returned together.
+*---------------------------------------------------------------------*
+    data lt_objnr type tt_r_objnr.
+
+    start_run( is_context ).
+    if gv_error = abap_true or iv_kostl is initial or iv_kstar is initial.
+      return.
+    endif.
+
+    lt_objnr = value #(
+      ( sign = 'I' option = 'EQ' low = |KS{ gc_kokrs }{ iv_kostl }| )
+      ( sign = 'I' option = 'CP' low = |KL{ gc_kokrs }{ iv_kostl }*| ) ).
+
+    read_line_items(
+      exporting iv_data_set = 'A'
+                it_objnr    = lt_objnr
+                iv_gjahr    = is_context-gjahr
+                iv_versn    = is_context-versn
+                iv_wrttp    = is_context-wrttp
+                iv_kstar    = iv_kstar
+      changing  ct_items    = rt_item ).
+
+    if gv_compare = abap_true.
+      read_line_items(
+        exporting iv_data_set = 'B'
+                  it_objnr    = lt_objnr
+                  iv_gjahr    = cond #( when is_context-gjahr2 is initial then is_context-gjahr else is_context-gjahr2 )
+                  iv_versn    = cond #( when is_context-versn2 is initial then is_context-versn else is_context-versn2 )
+                  iv_wrttp    = cond #( when is_context-wrttp2 is initial then is_context-wrttp else is_context-wrttp2 )
+                  iv_kstar    = iv_kstar
+        changing  ct_items    = rt_item ).
+    endif.
+  endmethod.
+
+
+  method read_line_items.
+*---------------------------------------------------------------------*
+* Read the line items of one data set (COEP actuals / COEJ plan)
+*---------------------------------------------------------------------*
+* COEP: one row per posting, value in WOGBTR, period in PERIO.
+* COEJ: one row per fiscal year with WOG001-WOG016 across it; each row
+* is exploded into one row per period in the range, zero periods are
+* skipped (as READ_LINE_ITEMS_COEJ in the report).
+* LEFT OUTER JOIN on the document header COBK: a line item must not
+* vanish just because its header is missing.
+*---------------------------------------------------------------------*
+    data: ls_periods type ty_period_sum,
+          ls_item    type ty_line_item,
+          lv_period  type ty_period,
+          lv_from    type coep-perio,
+          lv_to      type coep-perio.
+
+    field-symbols <lv_val> type any.
+
+    lv_from = gv_perv.
+    lv_to   = gv_perb.
+
+    if iv_wrttp = '04'.
+      select coep~belnr, coep~buzei, coep~objnr,
+             coep~kstar, coep~versn, coep~gjahr, coep~perio,
+             coep~wogbtr,
+             cobk~bldat, cobk~budat, cobk~cpudt, cobk~usnam, cobk~bltxt
+        from coep
+        left outer join cobk
+          on  cobk~kokrs = coep~kokrs
+          and cobk~belnr = coep~belnr
+        where coep~kokrs =  @gc_kokrs
+          and coep~objnr in @it_objnr
+          and coep~gjahr =  @iv_gjahr
+          and coep~versn =  @iv_versn
+          and coep~wrttp =  @iv_wrttp
+          and coep~kstar =  @iv_kstar
+          and coep~perio between @lv_from and @lv_to
+        into table @data(lt_coep).
+
+      loop at lt_coep into data(ls_coep).
+        ls_item = corresponding #( ls_coep ).
+        ls_item-data_set = iv_data_set.
+        ls_item-waers    = gv_waers.
+        decode_objnr(
+          exporting iv_objnr = ls_coep-objnr
+          importing ev_kostl = ls_item-kostl ).
+        append ls_item to ct_items.
+      endloop.
+
+      return.
+    endif.
+
+    select coej~belnr, coej~buzei, coej~objnr,
+           coej~kstar, coej~versn, coej~gjahr,
+           coej~wog001, coej~wog002, coej~wog003, coej~wog004,
+           coej~wog005, coej~wog006, coej~wog007, coej~wog008,
+           coej~wog009, coej~wog010, coej~wog011, coej~wog012,
+           coej~wog013, coej~wog014, coej~wog015, coej~wog016,
+           cobk~bldat, cobk~budat, cobk~cpudt, cobk~usnam, cobk~bltxt
+      from coej
+      left outer join cobk
+        on  cobk~kokrs = coej~kokrs
+        and cobk~belnr = coej~belnr
+      where coej~kokrs =  @gc_kokrs
+        and coej~objnr in @it_objnr
+        and coej~gjahr =  @iv_gjahr
+        and coej~versn =  @iv_versn
+        and coej~wrttp =  @iv_wrttp
+        and coej~kstar =  @iv_kstar
+      into table @data(lt_coej).
+
+    loop at lt_coej into data(ls_coej).
+      periods_from_wog( exporting iv_source  = ls_coej
+                        changing  cs_periods = ls_periods ).
+
+      clear ls_item.
+      ls_item = corresponding #( ls_coej ).
+      ls_item-data_set = iv_data_set.
+      ls_item-waers    = gv_waers.
+
+      decode_objnr(
+        exporting iv_objnr = ls_coej-objnr
+        importing ev_kostl = ls_item-kostl ).
+
+      do gv_perb times.
+        if sy-index < gv_perv.
+          continue.
+        endif.
+
+        lv_period = sy-index.
+
+        assign component |VAL{ lv_period }| of structure ls_periods to <lv_val>.
+        if sy-subrc <> 0 or <lv_val> = 0.
+          continue.
+        endif.
+
+        ls_item-perio  = lv_period.
+        ls_item-wogbtr = <lv_val>.
+        append ls_item to ct_items.
+      enddo.
+    endloop.
   endmethod.
 
 

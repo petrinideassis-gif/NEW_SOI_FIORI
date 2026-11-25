@@ -17,6 +17,7 @@
 *  Income (SOI):
 *  - Y0000CO_C_SOILINE: one row per SOI line (list)
 *  - Y0000CO_C_SOIDET : the breakdown of one SOI line (detail page)
+*  - Y0000CO_C_SOIITM : the line items of one breakdown row (COEP/COEJ)
 *
 *  The values come from the SOI engine Y0000CO_CL_SOI_ENGINE, a copy
 *  of the engine of report Y0000CO_SOI_NEW: periods 1-12, special
@@ -41,7 +42,7 @@
 *  - Authorization is checked first in the engine's RUN, with the
 *    centralised Y0000CO_FI_AUTHORITY_CHECKS, as in the report
 *  - Texts (logon language, fallback 'E') come from the engine
-*  - One class serves both entities; GET_ENTITY_ID tells which one
+*  - One class serves all three entities; GET_ENTITY_ID tells which
 *  - The breakdown request runs the engine again (no state is kept
 *    between OData requests); the filter carries all keys of the line
 *  - Comments must stay inside METHOD ... ENDMETHOD: the class editor
@@ -86,6 +87,10 @@ class y0000co_cl_soi_query definition
         aufnr    type aufnr,
         kstar    type kstar,
         comp_soiline type y0000co_nsoi01-soiline,
+        data_set type c length 10,
+        belnr    type c length 10,
+        buzei    type n length 3,
+        perio    type n length 3,
       end of ty_filter.
 
 *---------------------------------------------------------------------*
@@ -96,7 +101,8 @@ class y0000co_cl_soi_query definition
 *---------------------------------------------------------------------*
     types:
       tt_result type standard table of y0000co_c_soiline with empty key,
-      tt_detail type standard table of y0000co_c_soidet with empty key.
+      tt_detail type standard table of y0000co_c_soidet with empty key,
+      tt_item   type standard table of y0000co_c_soiitm with empty key.
 
     methods:
       read_filter
@@ -118,6 +124,15 @@ class y0000co_cl_soi_query definition
         importing is_filter        type ty_filter
         returning value(rt_detail) type tt_detail
         raising   y0000co_cx_soi,
+
+      read_items
+        importing is_filter      type ty_filter
+        returning value(rt_item) type tt_item
+        raising   y0000co_cx_soi,
+
+      build_context
+        importing is_filter         type ty_filter
+        returning value(rs_context) type y0000co_cl_soi_engine=>ty_context,
 
       respond
         importing io_request  type ref to if_rap_query_request
@@ -147,6 +162,12 @@ class y0000co_cl_soi_query implementation.
         respond( exporting io_request  = io_request
                            io_response = io_response
                  changing  ct_result   = lt_detail ).
+
+      when 'Y0000CO_C_SOIITM'.
+        data(lt_item) = read_items( ls_filter ).
+        respond( exporting io_request  = io_request
+                           io_response = io_response
+                 changing  ct_result   = lt_item ).
 
       when others.
         data(lt_result) = read_lines( ls_filter ).
@@ -211,6 +232,14 @@ class y0000co_cl_soi_query implementation.
           rs_filter-kstar = ls_value-low.
         when 'COMPONENTLINE'.
           rs_filter-comp_soiline = ls_value-low.
+        when 'DATASET'.
+          rs_filter-data_set = ls_value-low.
+        when 'DOCUMENTNUMBER'.
+          rs_filter-belnr = ls_value-low.
+        when 'DOCUMENTITEM'.
+          rs_filter-buzei = ls_value-low.
+        when 'FISCALPERIOD'.
+          rs_filter-perio = ls_value-low.
       endcase.
     endloop.
 
@@ -222,29 +251,14 @@ class y0000co_cl_soi_query implementation.
 * Run the SOI engine for the filter values
 *---------------------------------------------------------------------*
 * The engine is created per request: its caches live for one run only.
-* A comparison is requested as soon as one comparison field is filled,
-* as IS_COMPARE_REQUESTED in the report. A blocking engine error is
+* A blocking engine error is
 * raised as Y0000CO_CX_SOI; CL_MESSAGE_HELPER splits its text into
 * SY-MSGV1-4 for message 00/398 (& & & &).
 *---------------------------------------------------------------------*
 
-    data(lv_compare) = xsdbool( is_filter-gjahr2 is not initial
-                             or is_filter-versn2 is not initial
-                             or is_filter-wrttp2 is not initial ).
-
     ro_engine = new y0000co_cl_soi_engine( ).
 
-    ro_engine->run( value #( soivar  = is_filter-soivar
-                             bukrs   = is_filter-bukrs
-                             gjahr   = is_filter-gjahr
-                             versn   = is_filter-versn
-                             wrttp   = is_filter-wrttp
-                             perv    = is_filter-perv
-                             perb    = is_filter-perb
-                             compare = lv_compare
-                             gjahr2  = is_filter-gjahr2
-                             versn2  = is_filter-versn2
-                             wrttp2  = is_filter-wrttp2 ) ).
+    ro_engine->run( build_context( is_filter ) ).
 
     data(lv_error) = ro_engine->get_error( ).
     if lv_error is not initial.
@@ -406,6 +420,106 @@ class y0000co_cl_soi_query implementation.
       enddo.
 
       append ls_row to rt_detail.
+    endloop.
+
+  endmethod.
+
+
+  method build_context.
+*---------------------------------------------------------------------*
+* Engine run context from the filter values
+*---------------------------------------------------------------------*
+* A comparison is requested as soon as one comparison field is filled,
+* as IS_COMPARE_REQUESTED in the report.
+*---------------------------------------------------------------------*
+
+    rs_context = value #( soivar  = is_filter-soivar
+                          bukrs   = is_filter-bukrs
+                          gjahr   = is_filter-gjahr
+                          versn   = is_filter-versn
+                          wrttp   = is_filter-wrttp
+                          perv    = is_filter-perv
+                          perb    = is_filter-perb
+                          compare = xsdbool( is_filter-gjahr2 is not initial
+                                          or is_filter-versn2 is not initial
+                                          or is_filter-wrttp2 is not initial )
+                          gjahr2  = is_filter-gjahr2
+                          versn2  = is_filter-versn2
+                          wrttp2  = is_filter-wrttp2 ).
+
+  endmethod.
+
+
+  method read_items.
+*---------------------------------------------------------------------*
+* Line items behind one breakdown row (entity Y0000CO_C_SOIITM)
+*---------------------------------------------------------------------*
+* Called when the detail page of a breakdown row follows the
+* association _ITEMS: the filter carries all keys of the row. As in
+* the report, line items exist for cost center rows only - order and
+* formula component rows return nothing. The engine does not run the
+* whole statement for this, only its checks (authorization, company
+* code, currency, period range). The item keys in the filter are only
+* set when one item is read by its key; then only that item returns.
+*---------------------------------------------------------------------*
+
+    if is_filter-bukrs is initial or is_filter-gjahr is initial
+    or is_filter-kostl is initial or is_filter-kstar is initial.
+      return.
+    endif.
+
+    data(lo_engine) = new y0000co_cl_soi_engine( ).
+
+    data(lt_items) = lo_engine->get_line_items( is_context = build_context( is_filter )
+                                                iv_kostl   = is_filter-kostl
+                                                iv_kstar   = is_filter-kstar ).
+
+    data(lv_error) = lo_engine->get_error( ).
+    if lv_error is not initial.
+      cl_message_helper=>set_msg_vars_for_clike( lv_error ).
+      raise exception type y0000co_cx_soi
+        message e398(00) with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    endif.
+
+    loop at lt_items assigning field-symbol(<ls_item>).
+      data(lv_data_set) = cond string( when <ls_item>-data_set = 'B' then `Comparison` else `Base` ).
+
+      if ( is_filter-data_set is not initial and lv_data_set      <> is_filter-data_set )
+      or ( is_filter-belnr    is not initial and <ls_item>-belnr <> is_filter-belnr )
+      or ( is_filter-buzei    is not initial and <ls_item>-buzei <> is_filter-buzei )
+      or ( is_filter-perio    is not initial and <ls_item>-perio <> is_filter-perio ).
+        continue.
+      endif.
+
+      append value y0000co_c_soiitm(
+        soiversion       = is_filter-soivar
+        fiscalyear       = is_filter-gjahr
+        companycode      = is_filter-bukrs
+        valuetype        = is_filter-wrttp
+        version          = is_filter-versn
+        periodfrom       = is_filter-perv
+        periodto         = is_filter-perb
+        compareyear      = is_filter-gjahr2
+        compareversion   = is_filter-versn2
+        comparevaluetype = is_filter-wrttp2
+        soiline          = is_filter-soiline
+        costcenter       = is_filter-kostl
+        ordernumber      = is_filter-aufnr
+        costelement      = is_filter-kstar
+        componentline    = is_filter-comp_soiline
+        dataset          = lv_data_set
+        documentnumber   = <ls_item>-belnr
+        documentitem     = <ls_item>-buzei
+        fiscalperiod     = <ls_item>-perio
+        postingdate      = <ls_item>-budat
+        amount           = <ls_item>-wogbtr
+        documenttext     = <ls_item>-bltxt
+        username         = <ls_item>-usnam
+        documentdate     = <ls_item>-bldat
+        entrydate        = <ls_item>-cpudt
+        itemfiscalyear   = <ls_item>-gjahr
+        itemversion      = <ls_item>-versn
+        currency         = <ls_item>-waers ) to rt_item.
     endloop.
 
   endmethod.

@@ -1,7 +1,8 @@
 @EndUserText.label: 'SOI report - breakdown'
 @ObjectModel.query.implementedBy: 'ABAP:Y0000CO_CL_SOI_QUERY'
 @UI.headerInfo: { typeName:       'Breakdown Row',
-                  typeNamePlural: 'Breakdown' }
+                  typeNamePlural: 'Breakdown',
+                  title:          { type: #STANDARD, value: 'RowType' } }
 define custom entity Y0000CO_C_SOIDET
 {
       @UI.hidden: true
@@ -41,15 +42,30 @@ define custom entity Y0000CO_C_SOIDET
 
       @UI.hidden: true
   key SoiLine          : y0000co_soiline;
+      @UI.facet: [
+        { id:            'Totals',
+          purpose:       #STANDARD,
+          type:          #IDENTIFICATION_REFERENCE,
+          label:         'Totals',
+          position:      10 },
+        { id:            'LineItems',
+          purpose:       #STANDARD,
+          type:          #LINEITEM_REFERENCE,
+          label:         'Line Items',
+          position:      20,
+          targetElement: '_Items' } ]
       @UI.lineItem: [{ position: 20, importance: #HIGH }]
+      @UI.identification: [{ position: 10 }]
       @EndUserText.label: 'Cost Center'
   key CostCenter       : kostl;
 
       @UI.lineItem: [{ position: 30, importance: #HIGH }]
+      @UI.identification: [{ position: 20 }]
       @EndUserText.label: 'Order'
   key OrderNumber      : aufnr;
 
       @UI.lineItem: [{ position: 40, importance: #HIGH }]
+      @UI.identification: [{ position: 30 }]
       @UI.textArrangement: #TEXT_LAST
       @ObjectModel.text.element: [ 'CostElementText' ]
       @EndUserText.label: 'Cost Element'
@@ -94,21 +110,25 @@ define custom entity Y0000CO_C_SOIDET
       FunctionalAreaText : abap.char(50);
 
       @UI.lineItem: [{ position: 100, importance: #HIGH }]
+      @UI.identification: [{ position: 40 }]
       @EndUserText.label: 'Total'
       @Semantics.amount.currencyCode: 'Currency'
       TotalAmount      : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 110 }]
+      @UI.identification: [{ position: 50 }]
       @EndUserText.label: 'Comparison Total'
       @Semantics.amount.currencyCode: 'Currency'
       CompareAmount    : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 120 }]
+      @UI.identification: [{ position: 60 }]
       @EndUserText.label: 'Difference'
       @Semantics.amount.currencyCode: 'Currency'
       DifferenceAmount : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 130 }]
+      @UI.identification: [{ position: 70 }]
       @EndUserText.label: 'Difference %'
       DifferencePercent : abap.dec(9,2);
 
@@ -173,9 +193,27 @@ define custom entity Y0000CO_C_SOIDET
       Period12         : abap.curr(15,2);
 
       @UI.lineItem: [{ position: 330 }]
+      @UI.identification: [{ position: 80 }]
       @EndUserText.label: 'Periods 13-16'
       @Semantics.amount.currencyCode: 'Currency'
       SpecialPeriods   : abap.curr(15,2);
 
       Currency         : waers;
+
+      _Items           : association [0..*] to Y0000CO_C_SOIITM
+                         on  _Items.SoiVersion       = $projection.SoiVersion
+                         and _Items.FiscalYear       = $projection.FiscalYear
+                         and _Items.CompanyCode      = $projection.CompanyCode
+                         and _Items.ValueType        = $projection.ValueType
+                         and _Items.Version          = $projection.Version
+                         and _Items.PeriodFrom       = $projection.PeriodFrom
+                         and _Items.PeriodTo         = $projection.PeriodTo
+                         and _Items.CompareYear      = $projection.CompareYear
+                         and _Items.CompareVersion   = $projection.CompareVersion
+                         and _Items.CompareValueType = $projection.CompareValueType
+                         and _Items.SoiLine          = $projection.SoiLine
+                         and _Items.CostCenter       = $projection.CostCenter
+                         and _Items.OrderNumber      = $projection.OrderNumber
+                         and _Items.CostElement      = $projection.CostElement
+                         and _Items.ComponentLine    = $projection.ComponentLine;
 }

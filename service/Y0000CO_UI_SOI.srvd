@@ -2,4 +2,5 @@
 define service Y0000CO_UI_SOI {
   expose Y0000CO_C_SOILINE as SOILine;
   expose Y0000CO_C_SOIDET  as SOIBreakdown;
+  expose Y0000CO_C_SOIITM  as SOILineItems;
 }

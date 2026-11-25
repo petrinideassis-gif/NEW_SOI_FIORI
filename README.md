@@ -8,6 +8,7 @@ Design: [docs/design-note.md](docs/design-note.md).
 
 | Type | Object | File |
 |---|---|---|
+| Custom entity (line items) | `Y0000CO_C_SOIITM` | `cds/Y0000CO_C_SOIITM.asddls` |
 | Custom entity (breakdown) | `Y0000CO_C_SOIDET` | `cds/Y0000CO_C_SOIDET.asddls` |
 | Custom entity (SOI lines) | `Y0000CO_C_SOILINE` | `cds/Y0000CO_C_SOILINE.asddls` |
 | Query class | `Y0000CO_CL_SOI_QUERY` | `src/classes/Y0000CO_CL_SOI_QUERY.abap` |
@@ -33,18 +34,21 @@ Stage 3 returns the SOI lines with periods 1-12, the special periods 13-16, the 
 
 Clicking a SOI line opens its detail page: section **Totals** and section **Breakdown** (the report's double-click drill-down: cost center / order / cost element rows for an extraction line, formula components with operator for a formula line). The breakdown rows add up to the line's total.
 
+Clicking a cost center row of the breakdown opens its detail page with section **Line Items**: the COEP postings (actuals) or COEJ plan rows (exploded per period) for that cost center and cost element over the period range, replacing the report's popup. With a comparison active, the items of both data sets are listed, marked **Base** / **Comparison** in column Data Set. As in the report, order and formula component rows have no line items.
+
 There is no display mode switch: the table always shows total, comparison, periods 01-12 and periods 13-16. In the report, comparison was only allowed in total mode; here it works with any period range.
 
 ## Restore order in ADT (one object at a time, activate before the next)
 
-1. Custom entity `Y0000CO_C_SOIDET` (breakdown): New Data Definition, Ctrl+A, paste, save, activate. It must exist before `Y0000CO_C_SOILINE`, whose association `_Details` points to it
-2. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, any template), Ctrl+A, paste, save, activate. A warning that the class does not exist yet is expected
-3. Exception class `Y0000CO_CX_SOI`: New ABAP Class, superclass `CX_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate
-4. Engine class `Y0000CO_CL_SOI_ENGINE`: New ABAP Class (no interface), Ctrl+A, paste, fill the header placeholders, save, activate
-5. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
-6. Service definition `Y0000CO_UI_SOI` (exposes `SOILine` and `SOIBreakdown`), paste, activate
-7. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
-8. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
+1. Custom entity `Y0000CO_C_SOIITM` (line items): New Data Definition, Ctrl+A, paste, save, activate. It must exist before `Y0000CO_C_SOIDET`, whose association `_Items` points to it
+2. Custom entity `Y0000CO_C_SOIDET` (breakdown): New Data Definition, Ctrl+A, paste, save, activate. It must exist before `Y0000CO_C_SOILINE`, whose association `_Details` points to it
+3. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, any template), Ctrl+A, paste, save, activate. A warning that the class does not exist yet is expected
+4. Exception class `Y0000CO_CX_SOI`: New ABAP Class, superclass `CX_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate
+5. Engine class `Y0000CO_CL_SOI_ENGINE`: New ABAP Class (no interface), Ctrl+A, paste, fill the header placeholders, save, activate
+6. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
+7. Service definition `Y0000CO_UI_SOI` (exposes `SOILine`, `SOIBreakdown` and `SOILineItems`), paste, activate
+8. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
+9. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
 
 All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
@@ -59,6 +63,7 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 7. Comparison: Comparison Version or Fiscal Year filled → Comparison Total, Difference and Difference % match the report in total mode (same values for `P_CMPTO` as Period To)
 8. Error message: Period From 10, Period To 3 → error "Periods must be between 1 and 16, and From <= To" instead of an empty table
 9. Breakdown: click an extraction line → rows per cost center / order and cost element; their Total adds up to the line's Total and matches the report's drill-down. Click a formula line → its components with operator
+10. Line items: in the breakdown of an extraction line, click a cost center row → its line items; their amounts add up to the row's Total and match the report's line item popup
 
 ## Troubleshooting (met so far)
 
@@ -81,4 +86,4 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
 ## Next stages
 
-Line items (level 3): COEP/COEJ postings behind one breakdown row, replacing the report's popup.
+Ready for users: transport, Fiori launchpad tile, PFCG role.
