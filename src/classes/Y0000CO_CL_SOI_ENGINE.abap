@@ -49,9 +49,11 @@
 *    (GV_BUKRS / GV_SOIVAR / GV_GJAHR / GV_VERSN / GV_WRTTP); dialog
 *    messages are collected in GT_MESSAGES (GET_MESSAGES) instead of
 *    being sent; no drill-down, no ALV
-*  - Error that stops the run (unknown company code, company code not
-*    in KOKRS 2000, no customizing, inconsistent customizing): RUN
-*    returns no lines and GET_MESSAGES says why
+*  - Error that stops the run (wrong period range, unknown company
+*    code, company code not in KOKRS 2000, no customizing, inconsistent
+*    customizing): RUN returns no lines and GET_ERROR says why
+*  - Non-blocking warnings (SET not expanded, formula skipped, empty
+*    process order SET) are attached to the affected lines as REMARK
 *  - Caches live for one RUN only: the engine is created per request
 *  - Comments must stay inside METHOD ... ENDMETHOD: the class editor
 *    rejects comments between method implementations
@@ -115,6 +117,7 @@ class y0000co_cl_soi_engine definition
         diff_pct   type ty_pct,
         waers      type waers,
         is_formula type abap_bool,
+        remark     type string,
       end of ty_line,
 
       tt_line type standard table of ty_line with empty key.
@@ -125,7 +128,10 @@ class y0000co_cl_soi_engine definition
         returning value(rt_line) type tt_line,
 
       get_messages
-        returning value(rt_messages) type string_table.
+        returning value(rt_messages) type string_table,
+
+      get_error
+        returning value(rv_error) type string.
 
   private section.
 
@@ -342,6 +348,21 @@ class y0000co_cl_soi_engine definition
       with unique key method kokrs bukrs ksgru kagru.
 
 *---------------------------------------------------------------------*
+* Warnings per object, for the remark column
+*---------------------------------------------------------------------*
+* A SET group that could not be expanded (KIND 'C' cost center group,
+* 'K' cost element group), so every SOI line using it gets a remark.
+*---------------------------------------------------------------------*
+    types: begin of ty_failed_group,
+             kind  type c length 1,
+             kokrs type kokrs,
+             group type y0000co_nsoi02-ksgru,
+           end of ty_failed_group.
+
+    types tt_failed_group type sorted table of ty_failed_group
+      with unique key kind kokrs group.
+
+*---------------------------------------------------------------------*
 * Instance state (one run)
 *---------------------------------------------------------------------*
 * GV_BUKRS / GV_SOIVAR replace P_BUKRS / P_SOIVAR of the report.
@@ -358,7 +379,11 @@ class y0000co_cl_soi_engine definition
       gv_perv         type i,
       gv_perb         type i,
       gv_error        type abap_bool,
+      gv_error_text   type string,
       gt_messages     type string_table,
+      gt_failed_group type tt_failed_group,
+      gt_order_sets_missing type string_table,
+      gt_formula_skipped type sorted table of y0000co_nsoi01-soiline with unique key table_line,
       gt_soi01        type tt_soi01,
       gt_rule         type tt_rule,
       gt_formula      type tt_formula,
@@ -457,6 +482,10 @@ class y0000co_cl_soi_engine definition
 
       run_pass,
 
+      build_remark
+        importing iv_soiline      type y0000co_nsoi01-soiline
+        returning value(rv_remark) type string,
+
       diff_percent
         importing iv_base       type v_coss_view-wog001
                   iv_diff       type v_coss_view-wog001
@@ -489,7 +518,9 @@ class y0000co_cl_soi_engine implementation.
 
     check_authority( ).
 
-    clear: gv_error, gt_messages, gt_soi01, gt_rule, gt_formula,
+    clear: gv_error, gv_error_text, gt_messages, gt_failed_group,
+           gt_order_sets_missing, gt_formula_skipped,
+           gt_soi01, gt_rule, gt_formula,
            gt_summary, gt_cc_cache, gt_kstar_cache, gt_order_cache,
            gt_order_totals, gt_totals_cache.
 
@@ -572,7 +603,8 @@ class y0000co_cl_soi_engine implementation.
                    + ls_summary-val015 + ls_summary-val016
         total      = ls_summary-line_sum
         waers      = ls_summary-waers
-        is_formula = ls_summary-is_formula ).
+        is_formula = ls_summary-is_formula
+        remark     = build_remark( ls_summary-soiline ) ).
 
       do 12 times.
         lv_period = sy-index.
@@ -654,6 +686,67 @@ class y0000co_cl_soi_engine implementation.
   endmethod.
 
 
+  method get_error.
+*---------------------------------------------------------------------*
+* First blocking error of the last run (initial if the run completed)
+*---------------------------------------------------------------------*
+    rv_error = gv_error_text.
+  endmethod.
+
+
+  method build_remark.
+*---------------------------------------------------------------------*
+* Remark for one SOI line from the non-blocking warnings
+*---------------------------------------------------------------------*
+* The report showed these warnings once for the whole run (popup or
+* status message). A query cannot return messages next to its data,
+* so they are attached to the lines they affect instead:
+* - a formula line skipped because of a circular/missing reference
+* - a rule whose cost center or cost element group did not expand
+* - a METHOD A rule while the process order SET was empty
+*---------------------------------------------------------------------*
+    data lt_parts type string_table.
+
+    read table gt_formula_skipped with table key table_line = iv_soiline
+      transporting no fields.
+    if sy-subrc = 0.
+      append `Formula skipped: circular or missing reference` to lt_parts.
+    endif.
+
+    loop at gt_rule into data(ls_rule) where soiline = iv_soiline.
+      if ls_rule-ksgru is not initial.
+        read table gt_failed_group with table key kind  = 'C'
+                                                  kokrs = ls_rule-kokrs
+                                                  group = ls_rule-ksgru
+          transporting no fields.
+        if sy-subrc = 0.
+          append |Cost center group { ls_rule-ksgru } not expanded| to lt_parts.
+        endif.
+      endif.
+
+      if ls_rule-kagru is not initial.
+        read table gt_failed_group with table key kind  = 'K'
+                                                  kokrs = ls_rule-kokrs
+                                                  group = ls_rule-kagru
+          transporting no fields.
+        if sy-subrc = 0.
+          append |Cost element group { ls_rule-kagru } not expanded| to lt_parts.
+        endif.
+      endif.
+
+      if ls_rule-method = 'A' and gt_order_sets_missing is not initial.
+        append |No process orders in SET { concat_lines_of( table = gt_order_sets_missing sep = `, ` ) }|
+          to lt_parts.
+      endif.
+    endloop.
+
+    sort lt_parts.
+    delete adjacent duplicates from lt_parts.
+
+    rv_remark = concat_lines_of( table = lt_parts sep = `; ` ).
+  endmethod.
+
+
   method check_authority.
 *---------------------------------------------------------------------*
 * Company code authorization (centralised check, display)
@@ -682,6 +775,9 @@ class y0000co_cl_soi_engine implementation.
 
     if iv_error = abap_true.
       gv_error = abap_true.
+      if gv_error_text is initial.
+        gv_error_text = iv_text.
+      endif.
     endif.
   endmethod.
 
@@ -1019,6 +1115,9 @@ class y0000co_cl_soi_engine implementation.
 
     if lt_orders is initial.
       add_message( |No process orders found in SET { lv_setname }| ).
+      if not line_exists( gt_order_sets_missing[ table_line = conv string( lv_setname ) ] ).
+        append conv string( lv_setname ) to gt_order_sets_missing.
+      endif.
       return.
     endif.
 
@@ -1452,6 +1551,8 @@ class y0000co_cl_soi_engine implementation.
 
           if lv_found = abap_false.
             add_message( |Cost center group { ls_rule-ksgru } (KOKRS { ls_rule-kokrs }) could not be expanded| ).
+            insert value #( kind = 'C' kokrs = ls_rule-kokrs group = ls_rule-ksgru )
+              into table gt_failed_group.
           endif.
 
           build_objnr_from_costcenters(
@@ -1483,6 +1584,8 @@ class y0000co_cl_soi_engine implementation.
 
           if lv_found = abap_false.
             add_message( |Cost element group { ls_rule-kagru } (KOKRS { ls_rule-kokrs }) could not be expanded| ).
+            insert value #( kind = 'K' kokrs = ls_rule-kokrs group = ls_rule-kagru )
+              into table gt_failed_group.
           endif.
 
           loop at lt_kstar into data(ls_kstar).
@@ -1746,6 +1849,7 @@ class y0000co_cl_soi_engine implementation.
       if lv_changed = abap_false.
         loop at lt_pending into lv_soiline.
           add_message( |Formula SOI line { lv_soiline } skipped: circular/missing reference| ).
+          insert lv_soiline into table gt_formula_skipped.
         endloop.
         exit.
       endif.

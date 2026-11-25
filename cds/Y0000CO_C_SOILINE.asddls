@@ -141,5 +141,9 @@ define root custom entity Y0000CO_C_SOILINE
       @Semantics.amount.currencyCode: 'Currency'
       SpecialPeriods   : abap.curr(15,2);
 
+      @UI.lineItem: [{ position: 190 }]
+      @EndUserText.label: 'Remark'
+      Remark           : abap.char(255);
+
       Currency         : waers;
 }

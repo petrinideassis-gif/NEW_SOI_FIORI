@@ -4,13 +4,14 @@ Fiori Elements preview of the Statement of Income (SOI) report (`Y0000CO_SOI_NEW
 
 Design: [docs/design-note.md](docs/design-note.md).
 
-## Objects in this repository (stage 3, selection options)
+## Objects in this repository
 
 | Type | Object | File |
 |---|---|---|
 | Custom entity | `Y0000CO_C_SOILINE` | `cds/Y0000CO_C_SOILINE.asddls` |
 | Query class | `Y0000CO_CL_SOI_QUERY` | `src/classes/Y0000CO_CL_SOI_QUERY.abap` |
 | Engine class | `Y0000CO_CL_SOI_ENGINE` | `src/classes/Y0000CO_CL_SOI_ENGINE.abap` |
+| Exception class | `Y0000CO_CX_SOI` | `src/classes/Y0000CO_CX_SOI.abap` |
 | Service definition | `Y0000CO_UI_SOI` | `service/Y0000CO_UI_SOI.srvd` |
 
 The service binding `Y0000CO_UI_SOI_O4` is created in ADT, not stored here.
@@ -34,11 +35,12 @@ There is no display mode switch: the table always shows total, comparison, perio
 ## Restore order in ADT (one object at a time, activate before the next)
 
 1. Custom entity `Y0000CO_C_SOILINE`: New Data Definition (template for custom entity; if none is offered, any template), Ctrl+A, paste, save, activate. A warning that the class does not exist yet is expected
-2. Engine class `Y0000CO_CL_SOI_ENGINE`: New ABAP Class (no interface), Ctrl+A, paste, fill the header placeholders, save, activate
-3. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
-4. Service definition `Y0000CO_UI_SOI`, paste, activate
-5. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
-6. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
+2. Exception class `Y0000CO_CX_SOI`: New ABAP Class, superclass `CX_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate
+3. Engine class `Y0000CO_CL_SOI_ENGINE`: New ABAP Class (no interface), Ctrl+A, paste, fill the header placeholders, save, activate
+4. Class `Y0000CO_CL_SOI_QUERY`: New ABAP Class, add interface `IF_RAP_QUERY_PROVIDER`, Ctrl+A, paste, fill the header placeholders, save, activate. Then activate the entity once more
+5. Service definition `Y0000CO_UI_SOI`, paste, activate
+6. Service binding `Y0000CO_UI_SOI_O4`: type OData V4 - UI, on that service definition, activate, publish
+7. Run `/IWFND/CACHE_CLEANUP` and `/IWBEP/CACHE_CLEANUP`, then open the preview from the binding (entity set `SOILine`)
 
 All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
@@ -51,6 +53,7 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 5. Totals match `Y0000CO_SOI_NEW` run in total mode for the same version, company code, year, version and value type, line by line
 6. Detail: Period From 1, Period To 12 → periods 01-12 and the total match the report in detail mode
 7. Comparison: Comparison Version or Fiscal Year filled → Comparison Total, Difference and Difference % match the report in total mode (same values for `P_CMPTO` as Period To)
+8. Error message: Period From 10, Period To 3 → error "Periods must be between 1 and 16, and From <= To" instead of an empty table
 
 ## Troubleshooting (met so far)
 
@@ -66,10 +69,10 @@ All objects go into package `Y0000CO_ALL_OBJECTS`, on one transport request.
 
 ## Known limits
 
-- Engine messages (a SET that could not be expanded, a circular formula, no process orders in the SET) are collected but not shown in Fiori yet; an engine error (unknown company code, company code not in controlling area 2000, no customizing) gives an empty table.
+- Blocking engine errors (wrong period range, company code not in controlling area 2000, no customizing, inconsistent customizing) are shown as an error message. Warnings (a SET that could not be expanded, a formula skipped, no process orders in the SET) appear in the Remark column of the affected lines.
 - The authorization check uses `Y0000CO_FI_AUTHORITY_CHECKS` like the report. Its behaviour on a failed check inside an OData request is not verified yet (it may end the request with an error).
 - The engine runs once per request; caches do not survive between requests.
 
 ## Next stages
 
-Stage 4: show engine messages in Fiori. Then drill-down (cost center / order / cost element, formula components, line items).
+Drill-down: cost center / order / cost element breakdown and formula components (level 2), then line items (level 3).

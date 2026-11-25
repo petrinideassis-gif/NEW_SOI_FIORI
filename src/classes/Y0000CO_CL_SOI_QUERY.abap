@@ -90,7 +90,8 @@ class y0000co_cl_soi_query definition
         raising   cx_rap_query_filter_no_range,
       read_lines
         importing is_filter        type ty_filter
-        returning value(rt_result) type tt_result,
+        returning value(rt_result) type tt_result
+        raising   y0000co_cx_soi,
       sort_result
         importing io_request type ref to if_rap_query_request
         changing  ct_result  type tt_result,
@@ -197,7 +198,8 @@ class y0000co_cl_soi_query implementation.
 * as IS_COMPARE_REQUESTED in the report. The filter values are copied
 * back into the key fields of every row, so the object page (which
 * reads one row by its key) gets the same numbers as the list.
-* Engine messages are not shown yet; an engine error returns no lines.
+* A blocking engine error is raised as Y0000CO_CX_SOI (error message
+* in Fiori); warnings arrive as the REMARK of the affected lines.
 *---------------------------------------------------------------------*
 
     data: lv_period3 type n length 3,
@@ -228,6 +230,19 @@ class y0000co_cl_soi_query implementation.
                                               versn2  = is_filter-versn2
                                               wrttp2  = is_filter-wrttp2 ) ).
 
+*---------------------------------------------------------------------*
+* Blocking engine error: shown in Fiori as an error message
+*---------------------------------------------------------------------*
+* CL_MESSAGE_HELPER splits the text into SY-MSGV1-4 (50 characters
+* each) for message 00/398 (& & & &).
+*---------------------------------------------------------------------*
+    data(lv_error) = lo_engine->get_error( ).
+    if lv_error is not initial.
+      cl_message_helper=>set_msg_vars_for_clike( lv_error ).
+      raise exception type y0000co_cx_soi
+        message e398(00) with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    endif.
+
     loop at lt_lines assigning field-symbol(<ls_line>).
       if is_filter-soiline is not initial and <ls_line>-soiline <> is_filter-soiline.
         continue.
@@ -252,6 +267,7 @@ class y0000co_cl_soi_query implementation.
         differenceamount  = <ls_line>-diff_abs
         differencepercent = <ls_line>-diff_pct
         specialperiods    = <ls_line>-special
+        remark            = <ls_line>-remark
         currency          = <ls_line>-waers ).
 
 *     Period columns: VAL001-VAL012 of the engine line into
