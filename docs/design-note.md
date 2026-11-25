@@ -1,6 +1,8 @@
 # Design note: SOI report as a Fiori preview
 
-Status: **simplified path agreed.** Keep compatibility views (no ACDOCA), do not refactor `Y0000CO_SOI_NEW` (copy the needed engine methods into the new class instead), one root entity in total mode, no value help view, stub stage first. Stage 1 source is in this repo; the rest of this note is the longer-term target.
+Status: **built and tested in the preview (25.11.2026).** Simplified path as agreed: compatibility views (no ACDOCA), `Y0000CO_SOI_NEW` unchanged (engine copied into `Y0000CO_CL_SOI_ENGINE`), no metadata extensions (not allowed on custom entities here), one period range instead of display modes. Built: SOI lines with periods, total, comparison and remarks; error messages; breakdown (level 2); line items (level 3). The sections below are the original design; where they differ from what was built, the README is current.
+
+Open: authorization test with a user without `F_BKPF_BUK`; timing of a year-over-year comparison; transport, launchpad tile and PFCG role before productive use.
 Sources read: `petrinideassis-gif/NEW_SOI-AND-PCBUCKE` (main, `760f516`): `CLAUDE.md`, `src/reports/Y0000CO_SOI_NEW.abap` (3,776 lines), `docs/concept-overview.md`, `docs/change-log.md`, `docs/ddic-spec.md`. `petrinideassis-gif/cost-center-report` (`efb36c6`): `README.md`, `docs/overview.md`, `docs/architecture.md`, `docs/design-decisions.md`, `docs/troubleshooting.md`.
 
 ---
